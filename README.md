@@ -36,6 +36,10 @@ The package script creates a native archive and SHA-256 checksum in `dist/`. It 
 
 The portable folder does not install desktop or D-Bus activation entries. Portal host registration can warn that the app is not installed. Auto-start, background permissions and file-manager integration are not validated for this bundle; launch it directly and keep it open for testing.
 
+## Receiving behind a firewall
+
+The default receiver uses a dynamically allocated TCP port. Discovery may work while incoming file transfers time out if the firewall only allows a fixed port. In Preferences, enable the static port and choose a TCP port already permitted on the local network. For example, an existing Packet setup may permit 9300. Only one app can listen on the same port: use different permitted ports when running Packet and Packet Lab together. Keep the VPN enabled; changing this application setting does not change VPN or firewall rules.
+
 ## Status
 
 This is an alpha experiment. School-network compatibility, Wi-Fi Direct/BWU and mid-transfer resume are not promised. A manual address can help when multicast discovery is unavailable; it cannot fix network isolation that also blocks TCP. Bluetooth remains discovery-related and is not a complete alternate transfer transport.
