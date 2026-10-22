@@ -778,6 +778,7 @@ impl OutboundRequest {
                         .file_name()
                         .ok_or_else(|| anyhow!("Failed to get file_name for {f}"))?;
                     let fmeta = FileMetadata {
+                        id: Some(file_metadata.len() as i64 + 1),
                         payload_id: Some(rand::rng().random::<i64>()),
                         name: Some(fname.to_os_string().into_string().unwrap()),
                         size: Some(fmetadata.size() as i64),
@@ -1733,5 +1734,64 @@ mod tests {
                 .contains("within 30 seconds")
         );
         assert_ne!(request.state.state, TransferState::Finished);
+    }
+
+    #[tokio::test]
+    async fn encrypted_file_introduction_preserves_attachment_payload_mapping() {
+        let (mut sender, peer) = text_sender().await;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        sender.payload = OutboundPayload::Files(vec![
+            root.join("Cargo.toml").to_string_lossy().into_owned(),
+            root.join("LICENSE").to_string_lossy().into_owned(),
+        ]);
+        sender
+            .process_paired_key_result(&sharing_nearby::V1Frame {
+                paired_key_result: Some(sharing_nearby::PairedKeyResultFrame {
+                    status: Some(paired_key_result_frame::Status::Unable.into()),
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let (events, _) = broadcast::channel(50);
+        let mut receiver = OutboundRequest::new(
+            *b"PEER",
+            peer,
+            "test-sender".into(),
+            events,
+            OutboundPayload::Files(vec![]),
+            RemoteDeviceInfo {
+                name: "test-sender".into(),
+                device_type: DeviceType::Laptop,
+            },
+        );
+        receiver.state.decrypt_key = Some(vec![1; 32]);
+        receiver.state.recv_hmac_key = Some(vec![2; 32]);
+        receiver.state.state = TransferState::SendingFiles;
+        for _ in 0..2 {
+            let length = receiver.socket.read_u32().await.unwrap();
+            receiver._handle(length.to_be_bytes()).await.unwrap();
+        }
+        assert_eq!(receiver.state.payload_buffers.len(), 1);
+        let bytes = receiver.state.payload_buffers.values().next().unwrap();
+        let frame = sharing_nearby::Frame::decode(bytes.as_slice()).unwrap();
+        let files = frame.v1.unwrap().introduction.unwrap().file_metadata;
+        assert_eq!(files.len(), 2);
+        let mut mapping = HashMap::new();
+        for file in files {
+            assert_ne!(
+                file.id(),
+                0,
+                "Google replaces zero attachment IDs, breaking payload lookup"
+            );
+            assert!(mapping.insert(file.id(), file.payload_id()).is_none());
+            assert!(
+                sender
+                    .state
+                    .transferred_files
+                    .contains_key(&file.payload_id())
+            );
+        }
     }
 }
