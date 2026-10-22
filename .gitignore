@@ -1,0 +1,26 @@
+target/
+_*build/
+/build-aux/app
+/build-aux/.flatpak-builder/
+/.flatpak/
+/vendor
+
+/.vscode
+
+/src/config.rs
+
+*.ui.in~
+*.ui~
+
+/subprojects/blueprint-compiler
+
+# Python
+# For Workbench workspaces
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+/dist/
+/_build/
+/.local-validation/

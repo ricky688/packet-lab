@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<schemalist>
+  <schema path="/io/github/ricky688/PacketLab/" id="@app-id@" gettext-domain="@gettext-package@">
+    <key name="window-width" type="i">
+      <default>360</default>
+      <!-- Translators: The gschema strings won't be used in the app directly and aren't a priority -->
+      <summary>Window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>600</default>
+      <summary>Window height</summary>
+    </key>
+    <key name="is-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized state</summary>
+    </key>
+    <key name="device-name" type="s">
+      <default>"Packet Lab"</default>
+      <summary>Device name</summary>
+    </key>
+    <key name="device-visibility" type="b">
+      <default>true</default>
+      <summary>Device visibility</summary>
+    </key>
+    <key name="download-folder" type="s">
+      <default>""</default>
+      <summary>Download folder</summary>
+    </key>
+    <key name="enable-static-port" type="b">
+      <default>false</default>
+    </key>
+    <key name="static-port-number" type="i">
+      <default>9300</default>
+    </key>
+    <key name="run-in-background" type="b">
+      <default>false</default>
+    </key>
+    <key name="auto-start" type="b">
+      <default>false</default>
+    </key>
+    <key name="enable-nautilus-plugin" type="b">
+      <default>false</default>
+    </key>
+    <key name="enable-tray-icon" type="b">
+      <default>false</default>
+    </key>
+  </schema>
+</schemalist>

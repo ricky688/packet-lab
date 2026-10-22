@@ -1,0 +1,145 @@
+using Gtk 4.0;
+using Adw 1;
+
+Adw.ApplicationWindow {
+  title: _("");
+  default-width: 800;
+  default-height: 600;
+
+  content: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {}
+
+    Box {
+      orientation: vertical;
+      valign: end;
+      vexpand: true;
+
+      Label {
+        label: _("Work In Progress");
+        margin-bottom: 30;
+
+        styles [
+          "title-1",
+        ]
+      }
+
+      Button {
+        label: _("Select Files (nonfunctional)");
+        margin-bottom: 240;
+        halign: center;
+
+        styles [
+          "pill",
+          "suggested-action",
+          "accent",
+        ]
+      }
+
+      Box {
+        margin-bottom: 12;
+        margin-top: 12;
+        margin-end: 12;
+        margin-start: 12;
+        hexpand: true;
+
+        Box {
+          hexpand: true;
+
+          Image {
+            icon-name: "sonar-symbolic";
+            margin-end: 8;
+            icon-size: large;
+
+            styles [
+              "accent",
+            ]
+          }
+
+          Box {
+            orientation: vertical;
+
+            Label {
+              label: _("Ready to receive");
+              halign: start;
+
+              styles [
+                "title-4",
+                "accent",
+              ]
+            }
+
+            Label {
+              label: "You appear as \"Gemma's Laptop\"";
+              margin-top: 2;
+              halign: start;
+
+              styles [
+                "dimmed",
+              ]
+            }
+          }
+        }
+
+        [end]
+        Box {
+          valign: center;
+
+          Button testbutton {
+            icon-name: "sliders-horizontal-symbolic";
+
+            styles [
+              "circular",
+            ]
+          }
+        }
+      }
+    }
+  };
+}
+
+Adw.Dialog dialog {
+  title: _("Options <nonfunctional>");
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {}
+
+    ScrolledWindow {
+      propagate-natural-height: true;
+      propagate-natural-width: true;
+
+      Box welcome {
+        orientation: vertical;
+        valign: center;
+        halign: center;
+        margin-start: 24;
+        margin-end: 24;
+        margin-bottom: 16;
+
+        Adw.PreferencesGroup {
+          title: _("Device Name");
+          margin-bottom: 16;
+          hexpand: true;
+
+          Adw.EntryRow {
+            title: _("Name");
+          }
+        }
+
+        Adw.PreferencesGroup {
+          title: _("Visibility");
+          hexpand: true;
+          margin-bottom: 12;
+
+          Adw.SwitchRow {
+            title: _("Visible");
+            subtitle: _("Whether others can see this device");
+          }
+        }
+      }
+    }
+  }
+}

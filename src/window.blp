@@ -1,0 +1,746 @@
+using Gtk 4.0;
+using Adw 1;
+
+menu primary_menu {
+    section {
+        item {
+            label: _("_Preferences");
+            action: "win.preferences";
+        }
+
+        item {
+            label: _("_Help");
+            action: "win.help";
+        }
+
+        item {
+            label: _("_Keyboard Shortcuts");
+            action: "app.shortcuts";
+        }
+
+        item {
+            label: _("_About Packet Lab");
+            action: "app.about";
+        }
+    }
+}
+
+template $Window: Adw.ApplicationWindow {
+    width-request: 360;
+    height-request: 294;
+
+    Adw.ToastOverlay toast_overlay {
+        Stack root_stack {
+            transition-type: crossfade;
+
+            StackPage {
+                name: "loading_service_page";
+                title: _("Packet Lab");
+
+                child: Adw.ToolbarView {
+                    [top]
+                    Adw.HeaderBar {
+                        [end]
+                        Button {
+                            tooltip-text: _("About");
+                            icon-name: "help-about-symbolic";
+                            action-name: "app.about";
+                        }
+                    }
+
+                    Adw.StatusPage loading_rqs_status_page {
+                        vexpand: true;
+                        title: _("Setting up Packet Lab…");
+
+                        paintable: Adw.SpinnerPaintable {
+                            widget: loading_rqs_status_page;
+                        };
+                    }
+                };
+            }
+
+            StackPage {
+                name: "rqs_error_status_page";
+                title: _("Packet Lab");
+
+                child: Adw.ToolbarView {
+                    [top]
+                    Adw.HeaderBar {
+                        [start]
+                        Button rqs_error_copy_button {
+                            icon-name: "edit-copy-symbolic";
+                            tooltip-text: _("Copy Log");
+                        }
+
+                        [end]
+                        MenuButton {
+                            icon-name: "open-menu-symbolic";
+                            menu-model: primary_menu;
+                            tooltip-text: _("Main Menu");
+                            primary: true;
+                        }
+                    }
+
+                    Adw.StatusPage {
+                        // Translators: This is the title of the status page where some error occurred while trying to setup Packet Lab
+                        icon-name: "dialog-error-symbolic";
+                        title: _("Couldn't Set Up");
+                        description: _("An error occurred while trying to setup Packet Lab");
+                        vexpand: true;
+
+                        Button rqs_error_retry_button {
+                            halign: center;
+                            label: _("Try Again");
+
+                            styles [
+                                "pill",
+                                "accent",
+                            ]
+                        }
+                    }
+                };
+            }
+
+            StackPage {
+                name: "main_page";
+
+                child: Adw.ToolbarView {
+                    extend-content-to-top-edge: true;
+
+                    [bottom]
+                    Adw.Clamp {
+                        maximum-size: 550;
+
+                        Box bottom_bar {
+                            orientation: vertical;
+                            valign: end;
+
+                            Box {
+                                margin-top: 18;
+                                margin-bottom: 18;
+                                margin-start: 24;
+                                margin-end: 24;
+                                hexpand: true;
+
+                                Box bottom_bar_status {
+                                    // internal
+                                    orientation: vertical;
+                                    halign: center;
+                                    hexpand: true;
+                                    spacing: 4;
+
+                                    Box bottom_bar_status_top {
+                                        // internal
+                                        halign: center;
+                                        spacing: 8;
+
+                                        Image bottom_bar_image {
+                                            // internal
+                                            icon-name: "network-available-symbolic";
+                                            pixel-size: 24;
+
+                                            styles [
+                                                "accent",
+                                            ]
+                                        }
+
+                                        Label bottom_bar_title {
+                                            // internal
+                                            label: "Ready";
+
+                                            styles [
+                                                "title-4",
+                                                "accent",
+                                            ]
+                                        }
+                                    }
+
+                                    Label bottom_bar_caption {
+                                        // internal
+                                        label: "Visible as \"{}\"";
+                                        ellipsize: end;
+
+                                        styles [
+                                            "dimmed",
+                                        ]
+                                    }
+                                }
+
+                                Adw.Bin bottom_bar_spacer {
+                                    visible: false;
+                                    hexpand: true;
+                                }
+
+                                Button bottom_bar_send_button {
+                                    label: _("Send To…");
+                                    visible: false;
+                                    halign: center;
+                                    valign: center;
+                                    margin-start: 8;
+                                    height-request: 42;
+
+                                    styles [
+                                        "suggested-action",
+                                        "pill",
+                                    ]
+                                }
+                            }
+                        }
+                    }
+
+                    content: Box main_box {
+                        orientation: vertical;
+                        hexpand: true;
+                        vexpand: true;
+
+                        Adw.NavigationView main_nav_view {
+                            Adw.NavigationPage main_nav_page {
+                                title: _("Main Page");
+                                tag: "main_nav_page";
+
+                                child: Adw.ToolbarView {
+                                    [top]
+                                    Adw.HeaderBar {
+                                        show-title: false;
+
+                                        [end]
+                                        MenuButton {
+                                            icon-name: "open-menu-symbolic";
+                                            menu-model: primary_menu;
+                                            tooltip-text: _("Main Menu");
+                                            primary: true;
+                                        }
+                                    }
+
+                                    Adw.StatusPage main_nav_content {
+                                        vexpand: true;
+                                        hexpand: true;
+                                        icon-name: "io.github.ricky688.PacketLab";
+                                        title: _("Packet Lab");
+                                        description: _("Add, or drop a file to send");
+
+                                        styles [
+                                            "icon-dropshadow",
+                                        ]
+
+                                        child: Box {
+                                            orientation: vertical;
+                                            spacing: 12;
+                                            halign: center;
+
+                                            Button main_add_files_button {
+                                                label: _("Add Files");
+
+                                                styles [
+                                                    "pill",
+                                                    "suggested-action",
+                                                    "accent",
+                                                ]
+                                            }
+
+                                            Button main_share_text_button {
+                                                label: _("Share Text");
+
+                                                styles [
+                                                    "pill",
+                                                ]
+                                            }
+                                        };
+                                    }
+                                };
+                            }
+
+                            Adw.NavigationPage {
+                                title: _("Selected Files Page");
+                                tag: "manage_files_nav_page";
+
+                                child: Adw.ToolbarView {
+                                    [top]
+                                    Adw.HeaderBar {
+                                        show-title: false;
+
+                                        [end]
+                                        MenuButton {
+                                            icon-name: "open-menu-symbolic";
+                                            menu-model: primary_menu;
+                                            tooltip-text: _("Main Menu");
+                                            primary: true;
+                                        }
+                                    }
+
+                                    Box manage_files_nav_content {
+                                        orientation: vertical;
+                                        hexpand: true;
+                                        vexpand: true;
+
+                                        ScrolledWindow {
+                                            hscrollbar-policy: never;
+                                            vexpand: true;
+                                            hexpand: true;
+
+                                            Adw.Clamp {
+                                                maximum-size: 550;
+
+                                                Adw.PreferencesGroup manage_files_header {
+                                                    // Internal
+                                                    title: "1 File";
+                                                    margin-top: 24;
+                                                    margin-bottom: 24;
+                                                    margin-start: 24;
+                                                    margin-end: 24;
+
+                                                    [header-suffix]
+                                                    Button manage_files_add_files_button {
+                                                        Adw.ButtonContent {
+                                                            label: _("Add File");
+                                                            icon-name: "list-add-symbolic";
+                                                        }
+
+                                                        styles [
+                                                            "flat",
+                                                        ]
+                                                    }
+
+                                                    ListBox manage_files_listbox {
+                                                        selection-mode: none;
+
+                                                        styles [
+                                                            "boxed-list",
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                            }
+
+                            Adw.NavigationPage {
+                                title: _("Share Text");
+                                tag: "share_text_nav_page";
+
+                                child: Adw.ToolbarView {
+                                    [top]
+                                    Adw.HeaderBar {
+                                        show-title: false;
+
+                                        [end]
+                                        MenuButton {
+                                            icon-name: "open-menu-symbolic";
+                                            menu-model: primary_menu;
+                                            tooltip-text: _("Main Menu");
+                                            primary: true;
+                                        }
+                                    }
+
+                                    Box {
+                                        orientation: vertical;
+                                        hexpand: true;
+                                        vexpand: true;
+
+                                        ScrolledWindow {
+                                            hscrollbar-policy: never;
+                                            vexpand: true;
+                                            hexpand: true;
+
+                                            Adw.Clamp {
+                                                maximum-size: 550;
+
+                                                Box {
+                                                    orientation: vertical;
+                                                    margin-top: 24;
+                                                    margin-bottom: 24;
+                                                    margin-start: 24;
+                                                    margin-end: 24;
+                                                    spacing: 12;
+
+                                                    Box {
+                                                        orientation: vertical;
+
+                                                        styles [
+                                                            "card",
+                                                        ]
+
+                                                        Frame {
+                                                            margin-top: 6;
+                                                            margin-start: 6;
+                                                            margin-end: 6;
+
+                                                            ScrolledWindow {
+                                                                min-content-height: 220;
+                                                                vexpand: true;
+                                                                hscrollbar-policy: never;
+
+                                                                TextView share_text_view {
+                                                                    top-margin: 14;
+                                                                    bottom-margin: 14;
+                                                                    left-margin: 14;
+                                                                    right-margin: 14;
+                                                                    wrap-mode: word_char;
+                                                                    accepts-tab: false;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        Box {
+                                                            margin-top: 6;
+                                                            margin-bottom: 6;
+                                                            margin-start: 12;
+                                                            margin-end: 12;
+                                                            spacing: 6;
+
+                                                            Button paste_text_button {
+                                                                icon-name: "edit-paste-symbolic";
+                                                                tooltip-text: _("Paste from clipboard");
+
+                                                                styles [
+                                                                    "flat",
+                                                                ]
+                                                            }
+
+                                                            Button clear_text_button {
+                                                                icon-name: "edit-clear-symbolic";
+                                                                tooltip-text: _("Clear text");
+                                                                sensitive: false;
+
+                                                                styles [
+                                                                    "flat",
+                                                                ]
+                                                            }
+
+                                                            Adw.Bin {
+                                                                hexpand: true;
+                                                            }
+
+                                                            Label share_text_counter {
+                                                                valign: center;
+
+                                                                styles [
+                                                                    "caption",
+                                                                    "dim-label",
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Label {
+                                                        label: _("Enter or paste text, or links to send");
+                                                        halign: center;
+
+                                                        styles [
+                                                            "caption",
+                                                            "dim-label",
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                };
+                            }
+                        }
+                    };
+                };
+            }
+        }
+    }
+}
+
+Adw.Dialog select_recipients_dialog {
+    title: _("Select Recipients");
+    // content-height: -1;
+    // This will work but affects both the height and width
+    // but we don't width to get messed up, so set Dialog's
+    // content-height to -1 any time adding a item to the
+    // list box. That'll force it to recalculate size.
+    //
+    // Going back to this as setting content height doesn't
+    // seem to be working in some places
+    follows-content-size: true;
+    // Unfortunately have to hard-code it for now since I don't
+    // want the width to be messed with
+    // Unless I want do content-height -1 in every place that'd
+    // change the state of the dialog :(
+    width-request: 360;
+
+    Adw.ToolbarView {
+        top-bar-style: flat;
+
+        [top]
+        Adw.HeaderBar {
+            [end]
+            Button manual_recipient_button {
+                label: _("Connect by IP…");
+                tooltip-text: _("Connect to a local device when discovery is unavailable");
+                valign: center;
+            }
+
+            [start]
+            Button select_recipient_refresh_button {
+                tooltip-text: _("Refresh");
+                icon-name: "view-refresh-symbolic";
+                valign: center;
+
+                styles [
+                    "circular",
+                    "flat",
+                ]
+            }
+        }
+
+        Box select_recipient_box {
+            orientation: vertical;
+
+            ScrolledWindow {
+                propagate-natural-height: true;
+                propagate-natural-width: true;
+
+                Adw.Clamp {
+                    // Not setting them to the same value doesn't make
+                    // follow-content-size work as it should, empty space
+                    // on the sides is left in that case.
+                    maximum-size: 550;
+                    tightening-threshold: 550;
+
+                    Box {
+                        orientation: vertical;
+                        margin-top: 12;
+                        margin-bottom: 12;
+                        margin-start: 24;
+                        margin-end: 24;
+                        spacing: 12;
+
+                        Box loading_recipients_box {
+                            // `visibility` is set when ListBox is empty
+                            orientation: vertical;
+                            vexpand: true;
+                            valign: center;
+                            spacing: 12;
+                            margin-top: 12;
+                            margin-bottom: 12;
+
+                            Adw.Spinner {
+                                height-request: 40;
+                            }
+
+                            Label {
+                                justify: center;
+                                label: _("Looking for devices…");
+                            }
+                        }
+
+                        LinkButton recipients_help_button {
+                            // `visibility` is set when ListBox is empty
+                            valign: end;
+                            halign: center;
+                            label: _("Can't see the other device?");
+                        }
+
+                        ListBox recipient_listbox {
+                            selection-mode: none;
+                            margin-bottom: 12;
+
+                            styles [
+                                "boxed-list",
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+Adw.PreferencesDialog preferences_dialog {
+    title: _("Preferences");
+    content-width: 520;
+
+    Adw.PreferencesPage {
+        Adw.PreferencesGroup {
+            title: _("General");
+
+            Adw.EntryRow device_name_entry {
+                title: _("Device Name");
+                show-apply-button: true;
+            }
+
+            Adw.SwitchRow device_visibility_switch {
+                title: _("Visibility");
+                subtitle: _("Whether others can see this device");
+            }
+
+            Adw.ActionRow download_folder_row {
+                title: _("Downloads Folder");
+
+                [suffix]
+                Button download_folder_pick_button {
+                    valign: center;
+                    icon-name: "folder-symbolic";
+                    tooltip-text: _("Pick download folder");
+
+                    styles [
+                        "flat",
+                    ]
+                }
+            }
+        }
+
+        Adw.PreferencesGroup {
+            Adw.SwitchRow run_in_background_switch {
+                title: _("Run in Background");
+                subtitle: _("Allow running in the background");
+            }
+
+            Adw.SwitchRow auto_start_switch {
+                title: _("Auto Start");
+                subtitle: _("Start automatically at login");
+            }
+        }
+
+        Adw.PreferencesGroup {
+            title: _("Advanced");
+
+            Adw.SwitchRow nautilus_plugin_switch {
+                title: _("Nautilus Plugin");
+                subtitle: _("Integrate with Nautilus file menu");
+            }
+        }
+
+        Adw.PreferencesGroup tray_icon_group {
+            visible: false; // Set true for target_os linux since ksni is linux only
+            Adw.SwitchRow tray_icon_switch {
+                title: _("Tray Icon");
+                subtitle: _("Show tray icon in the system tray");
+            }
+        }
+
+        Adw.PreferencesGroup {
+            Adw.ExpanderRow static_port_expander {
+                title: _("Static Network Port");
+                // Translators: For whitelisting of the app.
+                subtitle: _("For whitelisting through a firewall");
+                show-enable-switch: true;
+                enable-expansion: false;
+
+                Adw.EntryRow static_port_entry {
+                    title: _("Port Number");
+                    show-apply-button: true;
+                }
+            }
+        }
+    }
+}
+
+Adw.Dialog help_dialog {
+    title: _("Help");
+    follows-content-size: true;
+
+    Adw.ToolbarView {
+        [top]
+        Adw.HeaderBar {
+            show-title: false;
+        }
+
+        ScrolledWindow {
+            hscrollbar-policy: never;
+            propagate-natural-height: true;
+            propagate-natural-width: true;
+
+            Adw.Clamp {
+                maximum-size: 360;
+                tightening-threshold: 360;
+                margin-top: 12;
+                margin-bottom: 48;
+                margin-start: 48;
+                margin-end: 48;
+
+                Box {
+                    orientation: vertical;
+                    spacing: 12;
+                    hexpand: true;
+
+                    Label {
+                        label: _("Can't see the other device?");
+                        justify: center;
+                        wrap: true;
+                        margin-bottom: 12;
+
+                        styles [
+                            "title-4",
+                        ]
+                    }
+
+                    Box {
+                        spacing: 16;
+                        hexpand: true;
+
+                        Image {
+                            icon-name: "radiowaves-1-symbolic";
+                            icon-size: large;
+                            valign: center;
+
+                            styles [
+                                "accent",
+                            ]
+                        }
+
+                        Label {
+                            label: _("Make sure both devices are connected to the same Wi-Fi network and have Bluetooth turned on");
+                            wrap: true;
+                            hexpand: true;
+                            justify: left;
+                            xalign: 0;
+                        }
+                    }
+
+                    Box {
+                        spacing: 16;
+                        hexpand: true;
+
+                        Image {
+                            icon-name: "eye-looking-symbolic";
+                            icon-size: large;
+                            valign: center;
+
+                            styles [
+                                "accent",
+                            ]
+                        }
+
+                        Label {
+                            label: _("Make sure the device is set to be visible to all nearby devices");
+                            wrap: true;
+                            hexpand: true;
+                            justify: left;
+                            xalign: 0;
+                        }
+                    }
+
+                    Box {
+                        spacing: 16;
+                        hexpand: true;
+
+                        Image {
+                            icon-name: "folder-visiting-symbolic";
+                            icon-size: large;
+                            valign: center;
+
+                            styles [
+                                "accent",
+                            ]
+                        }
+
+                        Label {
+                            label: _("For an Android device, try opening the <b>Quick Share</b> page in the <b>Files by Google</b> app");
+                            use-markup: true;
+                            wrap: true;
+                            hexpand: true;
+                            justify: left;
+                            xalign: 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,125 @@
+import gettext
+import locale
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, List
+
+import dbus
+import gi
+
+gi.require_version("GLib", "2.0")
+gi.require_version("GObject", "2.0")
+from gi.repository import GLib, GObject, Nautilus  # type: ignore  # noqa: E402
+
+APP_ID = "@APP_ID@"
+LOCALE_DOMAIN = "@LOCALE_DOMAIN@"
+
+
+def log(*vals: Any):
+    print("Packet:", *vals, file=sys.stderr)
+
+
+# TODO: Maybe have a separate gettext package for plugin scripts that gets
+# copied over alongside the script. Seems more robust?
+def init_i18n() -> gettext.NullTranslations | gettext.GNUTranslations:
+    locale_dirs: List[Path | None] = [
+        # `None` is for system default locale dir `/usr/share/locale`. Though it may not always be this path, it depends
+        # on the environment
+        None,
+        # Path based on meson's DESTDIR, it's here largely for nixpkg. For Flatpak, this path will be useless as it'll
+        # be a mounted path like `/app/share/locale`, which is obviously not available from the extension script
+        Path("@LOCALE_DIR@"),
+    ]
+    (lang, enc) = locale.getlocale()
+
+    flatpak_info = None
+    try:
+        flatpak_info = subprocess.run(
+            ["flatpak", "info", "-l", APP_ID], capture_output=True, check=True
+        )
+    except Exception:
+        pass
+
+    if flatpak_info:
+        locale_dirs.append(
+            Path(flatpak_info.stdout.decode().strip()) / "files" / "share" / "locale"
+        )
+
+    i18n = None
+    for locale_dir in locale_dirs:
+        try:
+            i18n = gettext.translation(LOCALE_DOMAIN, localedir=locale_dir)
+            break
+        except (OSError, IOError):
+            pass
+
+    if i18n is None:
+        i18n = gettext.translation(LOCALE_DOMAIN, fallback=True)
+        log(f"No {lang} localization found for domain: {LOCALE_DOMAIN!r}")
+    else:
+        log(f"Found {lang} localization for domain: {LOCALE_DOMAIN!r}")
+
+    return i18n
+
+
+i18n = init_i18n()
+_ = i18n.gettext
+
+
+class PacketShareProxy:
+    SERVICE_NAME = f"{APP_ID}"
+    OBJECT_PATH = f"/{APP_ID}/Share".replace(".", "/")
+    OBJECT_IFACE = "org.gtk.Actions"
+
+    def __init__(self, conn: dbus.Bus):
+        self.conn = conn
+
+    @property
+    def proxy(self) -> dbus.Interface:
+        object_ = self.conn.get_object(
+            PacketShareProxy.SERVICE_NAME, PacketShareProxy.OBJECT_PATH
+        )
+        proxy = dbus.Interface(object_, dbus_interface=PacketShareProxy.OBJECT_IFACE)
+        return proxy
+
+    def send_files(self, files: List[str]):
+        self.proxy.Activate(
+            "send-files", GLib.Variant("av", [GLib.Variant("as", files)]), {}
+        )
+
+
+# https://lazka.github.io/pgi-docs/
+# https://blog.victor.co.zm/custom-nautilus-context-menu-python-extension
+class PacketMenuProvider(GObject.GObject, Nautilus.MenuProvider):
+    def __init__(self):
+        super().__init__()
+
+        self.conn = dbus.SessionBus()
+        self.share_proxy = PacketShareProxy(self.conn)
+
+    def on_menu_item_activate(
+        self, menu: Nautilus.MenuItem, files: List[Nautilus.FileInfo]
+    ):
+        paths = [file.get_location().get_path() for file in files]
+
+        try:
+            self.share_proxy.send_files(paths)
+        except Exception as e:
+            log("Error sending file paths over D-Bus:", e)
+
+        # Gio.DesktopAppInfo with .get_commandline() is also an alternative
+
+    def get_file_items(self, files: List[Nautilus.FileInfo]) -> List[Nautilus.MenuItem]:
+        is_only_files = not any((file.is_directory() for file in files))
+        if len(files) == 0 or not is_only_files:
+            return []
+
+        item = Nautilus.MenuItem(
+            name=f"{PacketMenuProvider.__name__}::SendFiles",
+            label=_("Send with Packet"),
+        )
+
+        item.connect("activate", self.on_menu_item_activate, files)
+
+        return [item]

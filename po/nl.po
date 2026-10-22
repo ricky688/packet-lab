@@ -1,0 +1,740 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the packet package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: packet\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-06-11 14:10+0530\n"
+"PO-Revision-Date: 2025-06-12 11:29+0200\n"
+"Last-Translator: Heimen Stoffels <vistausss@fastmail.com>\n"
+"Language-Team: Dutch <https://hosted.weblate.org/projects/packet/main/nl/>\n"
+"Language: nl\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Poedit 3.6\n"
+
+#: data/resources/ui/shortcuts.blp:11
+msgctxt "shortcut window"
+msgid "General"
+msgstr "Algemeen"
+
+#: data/resources/ui/shortcuts.blp:14
+msgctxt "shortcut window"
+msgid "Show Shortcuts"
+msgstr "Sneltoetsen tonen"
+
+#: data/resources/ui/shortcuts.blp:19
+msgctxt "shortcut window"
+msgid "Show Help"
+msgstr "Hulpvenster openen"
+
+#: data/resources/ui/shortcuts.blp:24
+msgctxt "shortcut window"
+msgid "Open Preferences"
+msgstr "Voorkeuren openen"
+
+#: data/resources/ui/shortcuts.blp:29
+msgctxt "shortcut window"
+msgid "Quit"
+msgstr "Afsluiten"
+
+#: data/resources/ui/window.blp:7
+msgid "_Preferences"
+msgstr "_Voorkeuren"
+
+#: data/resources/ui/window.blp:12
+msgid "_Help"
+msgstr "_Hulp"
+
+#: data/resources/ui/window.blp:17
+msgid "_Keyboard Shortcuts"
+msgstr "_Sneltoetsen"
+
+#: data/resources/ui/window.blp:22
+msgid "_About Packet"
+msgstr "Over P_acket"
+
+#. Translators: The name should remain untranslated
+#: data/resources/ui/window.blp:38 data/resources/ui/window.blp:63
+#: data/resources/ui/window.blp:140 src/application.rs:238 src/main.rs:57
+#: data/io.github.ricky688.PacketLab.desktop.in.in:2
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:6
+msgid "Packet"
+msgstr "Packet"
+
+#: data/resources/ui/window.blp:52
+msgid "Setting up Packet…"
+msgstr "Bezig met instellen…"
+
+#: data/resources/ui/window.blp:71
+msgid "Copy Log"
+msgstr "Logboek kopiëren"
+
+#: data/resources/ui/window.blp:85
+msgid "Couldn't Set Up"
+msgstr "Instellen mislukt"
+
+#: data/resources/ui/window.blp:86
+msgid "An error occurred while trying to setup Packet"
+msgstr "Er is een fout opgetreden tijdens het instellen van Packet"
+
+#: data/resources/ui/window.blp:91
+msgid "Try Again"
+msgstr "Opnieuw proberen"
+
+#: data/resources/ui/window.blp:120
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:22
+msgid "Main Page"
+msgstr "Hoofdpagina"
+
+#: data/resources/ui/window.blp:141
+msgid "Add, or drop a file to send"
+msgstr "Voeg bestanden toe of sleep ze hierheen"
+
+#: data/resources/ui/window.blp:148
+msgid "Add Files"
+msgstr "Bestanden toevoegen"
+
+#: data/resources/ui/window.blp:163
+msgid "Selected Files Page"
+msgstr "Pagina met geselecteerde bestanden"
+
+#: data/resources/ui/window.blp:203
+msgid "Add File"
+msgstr "Bestand toevoegen"
+
+#: data/resources/ui/window.blp:298
+msgid "Send"
+msgstr "Versturen"
+
+#: data/resources/ui/window.blp:321
+msgid "Select Recipients"
+msgstr "Ontvangers kiezen"
+
+#: data/resources/ui/window.blp:391
+msgid "Looking for devices…"
+msgstr "Bezig met zoeken naar apparaten…"
+
+#: data/resources/ui/window.blp:399 data/resources/ui/window.blp:516
+msgid "Can't see the other device?"
+msgstr "Kunt u het andere apparaat niet vinden?"
+
+#: data/resources/ui/window.blp:418
+msgid "Preferences"
+msgstr "Voorkeuren"
+
+#: data/resources/ui/window.blp:423
+msgid "General"
+msgstr "Algemeen"
+
+#: data/resources/ui/window.blp:426
+msgid "Device Name"
+msgstr "Apparaatnaam"
+
+#: data/resources/ui/window.blp:431
+msgid "Visibility"
+msgstr "Zichtbaarheid"
+
+#: data/resources/ui/window.blp:432
+msgid "Whether others can see this device"
+msgstr "Of anderen dit apparaat kunnen vinden"
+
+#: data/resources/ui/window.blp:436
+msgid "Downloads Folder"
+msgstr "Downloadmap"
+
+#: data/resources/ui/window.blp:442
+msgid "Pick download folder"
+msgstr "Kies een downloadmap"
+
+#: data/resources/ui/window.blp:453
+msgid "Run in Background"
+msgstr "Uitvoeren op achtergrond"
+
+#: data/resources/ui/window.blp:454
+msgid "Allow running in the background"
+msgstr "Sta toe dat Packet op de achtergrond draait"
+
+#: data/resources/ui/window.blp:458
+msgid "Auto Start"
+msgstr "Automatisch opstarten"
+
+#: data/resources/ui/window.blp:459
+msgid "Start automatically at login"
+msgstr "Start Packet automatisch op na het opstarten"
+
+#: data/resources/ui/window.blp:464
+msgid "Advanced"
+msgstr "Geavanceerd"
+
+#: data/resources/ui/window.blp:467
+msgid "Nautilus Plugin"
+msgstr "Nautilus-plug-in"
+
+#: data/resources/ui/window.blp:468
+msgid "Integrate with Nautilus file menu"
+msgstr "Voeg acties toe aan het Nautilus-bestandsmenu"
+
+#: data/resources/ui/window.blp:474
+msgid "Static Network Port"
+msgstr "Statische netwerkpoort"
+
+#. Translators: For whitelisting of the app.
+#: data/resources/ui/window.blp:476
+msgid "For whitelisting through a firewall"
+msgstr "Staat toe dat Packet op de witte lijst van firewalls wordt geplaatst"
+
+#: data/resources/ui/window.blp:481
+msgid "Port Number"
+msgstr "Poortnummer"
+
+#: data/resources/ui/window.blp:490
+msgid "Help"
+msgstr "Hulp"
+
+#: data/resources/ui/window.blp:541
+msgid ""
+"Make sure both devices are connected to the same Wi-Fi network and have "
+"Bluetooth turned on"
+msgstr ""
+"Zorg dat beide apparaten verbonden zijn met hetzelfde wifinetwerk en dat "
+"bluetooth is ingeschakeld"
+
+#: data/resources/ui/window.blp:564
+msgid "Make sure the device is set to be visible to all nearby devices"
+msgstr "Zorg dat het apparaat zichtbaar is voor apparaten in de buurt"
+
+#: data/resources/ui/window.blp:587
+msgid ""
+"For an Android device, try opening the <b>Quick Share</b> page in the "
+"<b>Files by Google</b> app"
+msgstr ""
+"Op Android kunt u proberen om <b>Snel delen</b> in de app <b>Bestanden</b> "
+"(<b>Files by Google</b>) te openen"
+
+#. Translators: Replace "translator-credits" with your names, one name per line
+#: src/application.rs:253
+msgid "translator-credits"
+msgstr "Heimen Stoffels <vistausss@fastmail.com>"
+
+#: src/application.rs:258
+msgid "Loading logs..."
+msgstr "Bezig met laden van logboek…"
+
+#: src/application.rs:262
+msgid "Similar Projects"
+msgstr "Vergelijkbare projecten"
+
+#: src/application.rs:282 src/window.rs:1231
+msgid "Failed to retrieve the logs"
+msgstr "Het logboek kan niet worden opgehaald"
+
+#: src/objects/send_transfer.rs:48 src/widgets/recipient_card.rs:108
+#: src/widgets/recipient_card.rs:147
+msgid "Unknown device"
+msgstr "Onbekend apparaat"
+
+#: src/utils.rs:291
+msgid "hour"
+msgid_plural "hours"
+msgstr[0] "uur"
+msgstr[1] "uur"
+
+#: src/utils.rs:293 src/utils.rs:303
+msgid "minute"
+msgid_plural "minutes"
+msgstr[0] "minuut"
+msgstr[1] "minuten"
+
+#: src/utils.rs:305 src/utils.rs:308
+msgid "second"
+msgid_plural "seconds"
+msgstr[0] "seconde"
+msgstr[1] "seconden"
+
+#: src/widgets/file_card.rs:116
+msgid "Remove"
+msgstr "Verwijderen"
+
+#. Translators: An e.g. "4 Files"
+#: src/widgets/file_card.rs:134 src/widgets/receive_transfer.rs:422
+#: src/window.rs:1624
+#, rust-format
+msgid "{} File"
+msgid_plural "{} Files"
+msgstr[0] "{} bestand"
+msgstr[1] "{} bestanden"
+
+#: src/widgets/receive_transfer.rs:23
+msgid "Link"
+msgstr "Link"
+
+#: src/widgets/receive_transfer.rs:24
+msgid "Text"
+msgstr "Tekst"
+
+#: src/widgets/receive_transfer.rs:25
+msgid "Wi-Fi"
+msgstr "Wifi"
+
+#: src/widgets/receive_transfer.rs:64
+msgid "Receiving"
+msgstr "Bezig met ontvangen"
+
+#: src/widgets/receive_transfer.rs:67 src/widgets/receive_transfer.rs:199
+#: src/widgets/recipient_card.rs:310
+msgid "Cancel"
+msgstr "Annuleren"
+
+#: src/widgets/receive_transfer.rs:148 src/widgets/receive_transfer.rs:443
+msgid "Incoming Transfer"
+msgstr "Inkomende overdracht"
+
+#: src/widgets/receive_transfer.rs:194
+msgid "Receiving..."
+msgstr "Bezig met ontvangen…"
+
+#: src/widgets/receive_transfer.rs:276 src/widgets/receive_transfer.rs:450
+msgid "Decline"
+msgstr "Weigeren"
+
+#: src/widgets/receive_transfer.rs:277 src/widgets/receive_transfer.rs:454
+msgid "Accept"
+msgstr "Goedkeuren"
+
+#. Translators: An e.g. "6 Files (42.3MB)"
+#: src/widgets/receive_transfer.rs:308
+#, rust-format
+msgid "{} file ({})"
+msgid_plural "{} files ({})"
+msgstr[0] "{} bestand ({})"
+msgstr[1] "{} bestanden ({})"
+
+#: src/widgets/receive_transfer.rs:327
+#, rust-format
+msgid "Preview ({})"
+msgstr "({}) voorvertonen"
+
+#. Translators: This is the pin-code for the transfer
+#: src/widgets/receive_transfer.rs:343 src/widgets/recipient_card.rs:442
+#, rust-format
+msgid "Code: {}"
+msgstr "Code: {}"
+
+#: src/widgets/receive_transfer.rs:404
+msgid "Request timed out"
+msgstr "Verzoek is verlopen"
+
+#. Translators: This is when some device is sharing files or text
+#. e.g. (Someone's Phone wants to share 4 files)
+#. e.g. (Someone's Phone wants to share "lorem ipsum ...")
+#: src/widgets/receive_transfer.rs:417
+#, rust-format
+msgid "{} wants to share {}"
+msgstr "{} wil {} delen"
+
+#. Translators: {} will be replaced with an estimated remaining time string
+#. e.g. "About 4 minutes 32 seconds left"
+#: src/widgets/receive_transfer.rs:494 src/widgets/recipient_card.rs:473
+#, rust-format
+msgid "About {} left"
+msgstr "Nog {} te gaan"
+
+#: src/widgets/receive_transfer.rs:519
+msgid "Unexpected dissconnection"
+msgstr "Verbinding onverwacht onderbroken"
+
+#: src/widgets/receive_transfer.rs:552
+msgid "Transfer cancelled by sender"
+msgstr "Overdracht afgebroken door afzender"
+
+#: src/widgets/receive_transfer.rs:599
+msgid "Copy to clipboard"
+msgstr "Kopiëren naar klembord"
+
+#: src/widgets/receive_transfer.rs:607
+msgid "Save text as file"
+msgstr "Tekst opslaan in bestand"
+
+#: src/widgets/receive_transfer.rs:664 src/widgets/receive_transfer.rs:807
+#: src/widgets/receive_transfer.rs:813
+msgid "Open"
+msgstr "Openen"
+
+#: src/widgets/receive_transfer.rs:759
+#, rust-format
+msgid "Received \"{}\""
+msgstr "‘{}’ is ontvangen"
+
+#: src/widgets/receive_transfer.rs:774
+msgid "Copy"
+msgstr "Kopiëren"
+
+#: src/widgets/receive_transfer.rs:789
+#, rust-format
+msgid "{} file received"
+msgid_plural "{} files received"
+msgstr[0] "{} bestand ontvangen"
+msgstr[1] "{} bestanden ontvangen"
+
+#: src/widgets/recipient_card.rs:221
+msgid "Unavailable"
+msgstr "Niet beschikbaar"
+
+#: src/widgets/recipient_card.rs:244
+msgid "Queued"
+msgstr "In wachtrij"
+
+#: src/widgets/recipient_card.rs:291
+msgid "Retry"
+msgstr "Opnieuw proberen"
+
+#: src/widgets/recipient_card.rs:436
+msgid "Requested"
+msgstr "Aangevraagd"
+
+#: src/widgets/recipient_card.rs:499
+msgid "Failed"
+msgstr "Mislukt"
+
+#: src/widgets/recipient_card.rs:542
+#, rust-format
+msgid "Sent {} file"
+msgid_plural "Sent {} files"
+msgstr[0] "Er is {} bestand verstuurd"
+msgstr[1] "Er zijn {} bestanden verstuurd"
+
+#: src/window.rs:507
+msgid "Couldn't update the Nautilus plugin"
+msgstr "De Nautilus-plug-in kan niet worden bijgewerkt"
+
+#: src/window.rs:599 src/window.rs:985
+msgid "Packet cannot run in the background"
+msgstr "Packet kan niet op de achtergrond worden uitgevoerd"
+
+#: src/window.rs:635
+msgid "Packet cannot run at login"
+msgstr "Packet kan niet automatisch worden opgestart"
+
+#: src/window.rs:700
+msgid "Can't rename device during an active transfer"
+msgstr "De apparaatnaam kan niet worden gewijzigd tijdens een overdracht"
+
+#: src/window.rs:841
+msgid "Invalid Port"
+msgstr "Ongeldig poortnummer"
+
+#: src/window.rs:845
+#, rust-format
+msgid ""
+"The chosen static port \"{}\" is not available. Try a different port above "
+"1024."
+msgstr ""
+"De gekozen poort, ‘{}’, is niet beschikbaar. Probeer een poort hoger dan "
+"1024."
+
+#: src/window.rs:853
+msgid "_Ok"
+msgstr "_Oké"
+
+#: src/window.rs:901
+msgid "Can't access Downloads folder"
+msgstr "De downloadmap is ontoegankelijk"
+
+#: src/window.rs:902
+msgid "Pick Folder"
+msgstr "Kies een map"
+
+#: src/window.rs:929
+msgid "Packet wants to run in the background"
+msgstr "Packet wil op de achtergrond draaien"
+
+#: src/window.rs:1060
+msgid "Plugin Installed"
+msgstr "Plug-in geïnstalleerd"
+
+#: src/window.rs:1064
+msgid "Done"
+msgstr "Gereed"
+
+#: src/window.rs:1080
+#, rust-format
+msgid ""
+"The plugin was installed successfully, but requires the following packages "
+"to function: {}"
+msgstr ""
+"De plug-in is geïnstalleerd, maar is afhankelijk van deze pakketten: {}"
+
+#: src/window.rs:1096
+#, rust-format
+msgid ""
+"Package names may vary by distribution, visit <a {}>this link</a> for "
+"details."
+msgstr ""
+"Pakketnamen kunnen per distributie verschillen - open voor meer informatie "
+"<a {}>deze link</a>."
+
+#: src/window.rs:1111
+msgid ""
+"Once that's done, restart Nautilus (e.g., by logging out and back in) to "
+"load the plugin."
+msgstr ""
+"Na de installatie dient Nautilus herstart te worden, bijvoorbeeld door af en "
+"aan te melden."
+
+#: src/window.rs:1121
+msgid "Installation Failed"
+msgstr "Installatie mislukt"
+
+#: src/window.rs:1125
+msgid "Close"
+msgstr "Sluiten"
+
+#: src/window.rs:1139
+msgid ""
+"Plugin installation failed. Make sure the following directory exists and is "
+"accessible by Packet:"
+msgstr ""
+"De plug-in kan niet worden geïnstalleerd. Zorg dat deze map bestaat en "
+"toegankelijk is:"
+
+#: src/window.rs:1238
+msgid "Copied log to clipboard"
+msgstr "Logboek gekopieerd naar klembord"
+
+#: src/window.rs:1506
+msgid "Ready"
+msgstr "Gereed"
+
+#: src/window.rs:1513
+#, rust-format
+msgid "Visible as {:?}"
+msgstr "Zichtbaar als {:?}"
+
+#: src/window.rs:1519
+msgid "Invisible"
+msgstr "Onzichtbaar"
+
+#: src/window.rs:1525
+msgid "No new devices can share with you"
+msgstr "Nieuwe apparaten kunnen niets met u delen"
+
+#: src/window.rs:1530
+msgid "Disconnected"
+msgstr "Verbinding verbroken"
+
+#: src/window.rs:1536
+msgid "Connect to Wi-Fi and turn on Bluetooth"
+msgstr "Maak verbinding met wifi en schakel bluetooth in"
+
+#: src/window.rs:1539
+msgid "Connect to Wi-Fi"
+msgstr "Verbinden met wifi"
+
+#: src/window.rs:1542
+msgid "Turn on Bluetooth"
+msgstr "Bluetooth inschakelen"
+
+#: src/window.rs:1615
+msgid "Couldn't open files"
+msgstr "De bestanden kunnen niet worden geopend"
+
+#: data/resources/plugins/packet_nautilus.py.in:113
+msgid "Send with Packet"
+msgstr "Versturen met Packet"
+
+#: data/io.github.ricky688.PacketLab.desktop.in.in:3
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:7
+msgid "Share files easily"
+msgstr "Deel eenvoudig bestanden"
+
+#. Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+#: data/io.github.ricky688.PacketLab.desktop.in.in:9
+msgid "Gnome;GTK;Quick;Nearby;Share;"
+msgstr "Gnome;GTK;Nearby;Share;Delen;Snel;Dichtbij;"
+
+#. Trasnlators: The gschema strings won't be used in the app directly and aren't a priority
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:7
+msgid "Window width"
+msgstr "Vensterbreedte"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:11
+msgid "Window height"
+msgstr "Vensterhoogte"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:15
+msgid "Window maximized state"
+msgstr "Venstermaximalisatie"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:19
+msgid "Device name"
+msgstr "Apparaatnaam"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:23
+msgid "Device visibility"
+msgstr "Zichtbaarheid van apparaat"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:27
+msgid "Download folder"
+msgstr "Downloadmap"
+
+#. Trasnlators: The metainfo strings are for Flathub and aren't a priority
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:10
+msgid ""
+"Send and receive files wirelessly with Android devices using Quick Share or "
+"another device with Packet installed."
+msgstr ""
+"Wissen bestanden draadloos uit met Android-apparaten door middel van Quick "
+"Share of een ander apparaat waarop Packet geïnstalleerd is."
+
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:11
+msgid ""
+"Packet requires Bluetooth to be enabled and the devices to be connected to a "
+"Wi-Fi network with mDNS."
+msgstr ""
+"Voor het gebruik van Packet is bluetooth vereist en de apparaten dienen "
+"verbonden te zijn met hetzelfde mDNS-wifinetwerk."
+
+#. Trasnlators: These are captions for the screenshots on Flathub
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:18
+msgid "Sent Share Request"
+msgstr "Deelverzoek verstuurd"
+
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:26
+msgid "Received Share Request"
+msgstr "Deelverzoek ontvangen"
+
+#~ msgid "Copy error report"
+#~ msgstr "Foutmelding kopiëren"
+
+#~ msgid "Copied error report to clipboard"
+#~ msgstr "De foutmelding is gekopieerd naar het klembord"
+
+#~ msgid "{} file"
+#~ msgid_plural "{} files"
+#~ msgstr[0] "{} bestand"
+#~ msgstr[1] "{} bestanden"
+
+#~ msgid ""
+#~ "Make sure the other device is visible and connected to the same network "
+#~ "as this device.\n"
+#~ "\n"
+#~ "If it's an Android device and you still don't see it despite setting "
+#~ "visibility to \"Everyone\", try opening the <b>Quick Share</b> page from "
+#~ "the <b>Google Files</b> app and leave it open.\n"
+#~ "\n"
+#~ "Also, ensure Bluetooth is enabled on both devices, as it's often required "
+#~ "for device discovery even over Wi-Fi."
+#~ msgstr ""
+#~ "Zorg dat het andere apparaat zichtbaar is en verbonden is met hetzelfde "
+#~ "wifinetwerk.\n"
+#~ "\n"
+#~ "Als het een Android-apparaat betreft en u het nog steeds ziet, open dan "
+#~ "de <b>Quick Share</b>-pagina vanuit Googles <b>Bestanden</b>-app en houd "
+#~ "die pagina geopend.\n"
+#~ "\n"
+#~ "Zorg er ook voor dat bluetooth is ingeschakeld op beide apparaten."
+
+#~ msgid "Home Page"
+#~ msgstr "Website"
+
+#~ msgid "Sent Share Request (Wide)"
+#~ msgstr "Deelverzoek verstuurd (breed)"
+
+#~ msgid "Features"
+#~ msgstr "Kenmerken"
+
+#~ msgid ""
+#~ "Added an option to make Packet use a static port, allowing for "
+#~ "whitelisting of the app in firewalls"
+#~ msgstr ""
+#~ "Nieuw: optie om Packet gebruik te laten maken van een statische poort, "
+#~ "zodat Packet op de witte lijst van firewalls komt te staan"
+
+#~ msgid "Added an option to set a custom \"Downloads folder\""
+#~ msgstr "Nieuw: optie om een andere downloadmap te kiezen"
+
+#~ msgid ""
+#~ "Added back the cancel button to the \"Recipient card\" during files being "
+#~ "sent"
+#~ msgstr ""
+#~ "Nieuw: de annuleerknop die tijdens het versturen werd getoond is terug"
+
+#~ msgid "Fixes"
+#~ msgstr "Opgelost: diverse fouten"
+
+#~ msgid "Prevented the app from crashing on badly formatted locale strings"
+#~ msgstr ""
+#~ "Opgelost: de toepassing crashte bij gebruik van onjuist opgemaakte "
+#~ "vertalingen"
+
+#~ msgid ""
+#~ "Fixed shared text's starting and ending characters being cut off some "
+#~ "times"
+#~ msgstr ""
+#~ "Opgelost: de eerste en laatste tekens van gedeelde tekst werden soms niet "
+#~ "getoond"
+
+#~ msgid "Fixed Wi-Fi password not being received properly"
+#~ msgstr ""
+#~ "Opgelost: het wifiwachtwoord werd soms niet op de juiste manier ontvangen"
+
+#~ msgid "Fixed devices with non-ASCII names not being discoverable"
+#~ msgstr "Opgelost: apparaten met namen zonder ascii waren niet zichtbaar"
+
+#~ msgid ""
+#~ "Fixed recipient's device name not being updated unless the list is "
+#~ "refreshed"
+#~ msgstr ""
+#~ "Opgelost: de naam van het ontvangende apparaat werd pas bijgewerkt na het "
+#~ "herladen van de lijst"
+
+#~ msgid "Fixed duplicated recipient cards being spawned on list refresh"
+#~ msgstr "Opgelost: te veel ontvangerschermen na het herladen van de lijst"
+
+#~ msgid ""
+#~ "Fixed idle-state recipient cards becoming non-activatable (can't send to) "
+#~ "on selecting some other recipient"
+#~ msgstr ""
+#~ "Opgelost: schermen van ontvangers die inactief waren, waren niet "
+#~ "aanklikbaar meer na het kiezen van een andere ontvanger"
+
+#~ msgid ""
+#~ "Fixed accent styling not being removed recipient's \"Queued\" status in "
+#~ "some cases"
+#~ msgstr "Opgelost: problemen omtrent de accentstijl in de wachtrij"
+
+#~ msgid "Translations"
+#~ msgstr "Vertalingen"
+
+#~ msgid "Updated German translation"
+#~ msgstr "Bijgewerkt: Duitse vertaling"
+
+#~ msgid "Added Estonian translation"
+#~ msgstr "Nieuw: Estse vertaling"
+
+#~ msgid "Added Italian translation"
+#~ msgstr "Nieuw: Italiaanse vertaling"
+
+#~ msgid "Added Turkish translation"
+#~ msgstr "Nieuw: Turkse vertaling"
+
+#~ msgid "Added Portuguese (Brazil) translation"
+#~ msgstr "Nieuw: Braziliaans-Portugese vertaling"
+
+#~ msgid "Added partial German translation"
+#~ msgstr "Nieuw: gedeeltelijke Duitse vertaling"
+
+#~ msgid "Added Dutch translation"
+#~ msgstr "Nieuw: Nederlandse vertaling"
+
+#~ msgid "Network"
+#~ msgstr "Netwerk"
+
+#~ msgid "Unimplemented"
+#~ msgstr "Nog niet beschikbaar"

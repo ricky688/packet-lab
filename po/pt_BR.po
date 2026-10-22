@@ -1,0 +1,636 @@
+#
+#  <>, YEAR-2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: packet\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-18 04:01+0530\n"
+"PO-Revision-Date: 2026-06-17 16:21-0300\n"
+"Last-Translator: Emilio B. Pedrollo <emiliopedrollo@gmail.com>\n"
+"Language-Team: Brazilian Portuguese\n"
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+"X-Generator: Gtranslator 50.0\n"
+
+#: data/resources/ui/shortcuts-dialog.blp:6
+msgctxt "shortcut window"
+msgid "General"
+msgstr "Geral"
+
+#: data/resources/ui/shortcuts-dialog.blp:9
+msgctxt "shortcut window"
+msgid "Show Help"
+msgstr "Exibir Ajuda"
+
+#: data/resources/ui/shortcuts-dialog.blp:14
+msgctxt "shortcut window"
+msgid "Open Menu"
+msgstr "Abrir Menu"
+
+#: data/resources/ui/shortcuts-dialog.blp:19
+msgctxt "shortcut window"
+msgid "Open Preferences"
+msgstr "Abrir Preferências"
+
+#: data/resources/ui/shortcuts-dialog.blp:24
+msgctxt "shortcut window"
+msgid "Close or Hide Window"
+msgstr "Fechar ou Esconder Janela"
+
+#: data/resources/ui/shortcuts-dialog.blp:29
+msgctxt "shortcut window"
+msgid "Quit"
+msgstr "Sair"
+
+#: data/resources/ui/window.blp:7
+msgid "_Preferences"
+msgstr "_Preferências"
+
+#: data/resources/ui/window.blp:12
+msgid "_Help"
+msgstr "_Ajuda"
+
+#: data/resources/ui/window.blp:17
+msgid "_Keyboard Shortcuts"
+msgstr "_Atalhos de teclado"
+
+#: data/resources/ui/window.blp:22
+msgid "_About Packet"
+msgstr "_Sobre o Packet"
+
+#. Translators: The name should remain untranslated
+#: data/resources/ui/window.blp:38 data/resources/ui/window.blp:64
+#: data/resources/ui/window.blp:219 src/application.rs:241 src/main.rs:61
+#: src/tray.rs:24 data/io.github.ricky688.PacketLab.desktop.in.in:2
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:6
+msgid "Packet"
+msgstr "Packet"
+
+#: data/resources/ui/window.blp:45
+msgid "About"
+msgstr "Sobre"
+
+#: data/resources/ui/window.blp:53
+msgid "Setting up Packet…"
+msgstr "Configurando o Packet…"
+
+#: data/resources/ui/window.blp:72
+msgid "Copy Log"
+msgstr "Copiar relatório"
+
+#: data/resources/ui/window.blp:79 data/resources/ui/window.blp:210
+#: data/resources/ui/window.blp:254
+msgid "Main Menu"
+msgstr "Menu Principal"
+
+#: data/resources/ui/window.blp:87
+msgid "Couldn't Set Up"
+msgstr "Não foi possível realizar a configuração inicial"
+
+#: data/resources/ui/window.blp:88
+msgid "An error occurred while trying to setup Packet"
+msgstr "Um erro ocorreu durante a configuração inicial do Packet"
+
+#: data/resources/ui/window.blp:93
+msgid "Try Again"
+msgstr "Tentar novamente"
+
+#: data/resources/ui/window.blp:175
+msgid "Send To…"
+msgstr "Enviar para…"
+
+#: data/resources/ui/window.blp:198
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:22
+msgid "Main Page"
+msgstr "Página principal"
+
+#: data/resources/ui/window.blp:220
+msgid "Add, or drop a file to send"
+msgstr "Adicione ou solte um arquivo para enviar"
+
+#: data/resources/ui/window.blp:227
+msgid "Add Files"
+msgstr "Adicionar arquivos"
+
+#: data/resources/ui/window.blp:242
+msgid "Selected Files Page"
+msgstr "Página de arquivos selecionados"
+
+#: data/resources/ui/window.blp:283
+msgid "Add File"
+msgstr "Adicionar arquivo"
+
+#: data/resources/ui/window.blp:314
+msgid "Select Recipients"
+msgstr "Selecionar destinatários"
+
+#: data/resources/ui/window.blp:337
+msgid "Refresh"
+msgstr "Atualizar"
+
+#: data/resources/ui/window.blp:385
+msgid "Looking for devices…"
+msgstr "Buscando dispositivos…"
+
+#: data/resources/ui/window.blp:393 data/resources/ui/window.blp:520
+msgid "Can't see the other device?"
+msgstr "Não encontra outros dispositivos?"
+
+#: data/resources/ui/window.blp:412
+msgid "Preferences"
+msgstr "Preferências"
+
+#: data/resources/ui/window.blp:417
+msgid "General"
+msgstr "Geral"
+
+#: data/resources/ui/window.blp:420
+msgid "Device Name"
+msgstr "Nome do dispositivo"
+
+#: data/resources/ui/window.blp:425
+msgid "Visibility"
+msgstr "Visibilidade"
+
+#: data/resources/ui/window.blp:426
+msgid "Whether others can see this device"
+msgstr "Se outras pessoas podem ver este dispositivo"
+
+#: data/resources/ui/window.blp:430
+msgid "Downloads Folder"
+msgstr "Pasta de downloads"
+
+#: data/resources/ui/window.blp:436
+msgid "Pick download folder"
+msgstr "Escolha uma pasta de download"
+
+#: data/resources/ui/window.blp:447
+msgid "Run in Background"
+msgstr "Executar em segundo plano"
+
+#: data/resources/ui/window.blp:448
+msgid "Allow running in the background"
+msgstr "Permitir execução em segundo plano"
+
+#: data/resources/ui/window.blp:452
+msgid "Auto Start"
+msgstr "Início automático"
+
+#: data/resources/ui/window.blp:453
+msgid "Start automatically at login"
+msgstr "Iniciar automaticamente junto à sessão"
+
+#: data/resources/ui/window.blp:458
+msgid "Advanced"
+msgstr "Avançado"
+
+#: data/resources/ui/window.blp:461
+msgid "Nautilus Plugin"
+msgstr "Plugin do Nautilus"
+
+#: data/resources/ui/window.blp:462
+msgid "Integrate with Nautilus file menu"
+msgstr "Integrar ao menu de arquivos do Nautilus"
+
+#: data/resources/ui/window.blp:469
+msgid "Tray Icon"
+msgstr "Ícone na Bandeja"
+
+#: data/resources/ui/window.blp:470
+msgid "Show tray icon in the system tray"
+msgstr "Exibir ícone na bandeja do sistema"
+
+#: data/resources/ui/window.blp:476
+msgid "Static Network Port"
+msgstr "Porta de Rede Estática"
+
+#. Translators: For whitelisting of the app.
+#: data/resources/ui/window.blp:478
+msgid "For whitelisting through a firewall"
+msgstr "Permitir aplicativo através do firewall"
+
+#: data/resources/ui/window.blp:483
+msgid "Port Number"
+msgstr "Número da porta"
+
+#: data/resources/ui/window.blp:492
+msgid "Help"
+msgstr "Ajuda"
+
+#: data/resources/ui/window.blp:545
+msgid "Make sure both devices are connected to the same Wi-Fi network and have Bluetooth turned on"
+msgstr "Certifique-se de que ambos os dispositivos estejam conectados a mesma rede Wi-Fi e com o Bluetooth ligado"
+
+#: data/resources/ui/window.blp:568
+msgid "Make sure the device is set to be visible to all nearby devices"
+msgstr "Certifique-se de que seu dispositivo está configurado como visível para todos os dispositivos próximos"
+
+#: data/resources/ui/window.blp:591
+msgid "For an Android device, try opening the <b>Quick Share</b> page in the <b>Files by Google</b> app"
+msgstr "Para aparelhos Android, tente abrir a página <b>Quick Share</b> no aplicativo <b>Arquivos de Google</b>"
+
+#. Translators: Replace "translator-credits" with your names, one name per line
+#: src/application.rs:256
+msgid "translator-credits"
+msgstr "John Peter Sa"
+
+#: src/application.rs:261
+msgid "Loading logs..."
+msgstr "Carregando relatórios..."
+
+#: src/application.rs:265
+msgid "Similar Projects"
+msgstr "Projetos semelhantes"
+
+#: src/application.rs:285 src/window.rs:1360
+msgid "Failed to retrieve the logs"
+msgstr "Não foi possível recuperar os relatórios"
+
+#: src/objects/send_transfer.rs:47 src/widgets/recipient_card.rs:113
+#: src/widgets/recipient_card.rs:152
+msgid "Unknown device"
+msgstr "Dispositivo desconhecido"
+
+#: src/tray.rs:30 src/widgets/receive_transfer.rs:672
+#: src/widgets/receive_transfer.rs:814 src/widgets/receive_transfer.rs:820
+msgid "Open"
+msgstr "Abrir"
+
+#: src/tray.rs:38
+msgid "Exit"
+msgstr "Sair"
+
+#: src/utils.rs:291
+msgid "hour"
+msgid_plural "hours"
+msgstr[0] "hora"
+msgstr[1] "horas"
+
+#: src/utils.rs:293 src/utils.rs:303
+msgid "minute"
+msgid_plural "minutes"
+msgstr[0] "minuto"
+msgstr[1] "minutos"
+
+#: src/utils.rs:305 src/utils.rs:308
+msgid "second"
+msgid_plural "seconds"
+msgstr[0] "segundo"
+msgstr[1] "segundos"
+
+#: src/widgets/file_card.rs:121
+msgid "Remove"
+msgstr "Remover"
+
+#. Translators: An e.g. "4 Files"
+#: src/widgets/file_card.rs:139 src/widgets/receive_transfer.rs:430
+#: src/window.rs:1759
+msgid "{} File"
+msgid_plural "{} Files"
+msgstr[0] "{} Arquivo"
+msgstr[1] "{} Arquivos"
+
+#: src/widgets/receive_transfer.rs:24
+msgid "Link"
+msgstr "Link"
+
+#: src/widgets/receive_transfer.rs:25
+msgid "Text"
+msgstr "Texto"
+
+#: src/widgets/receive_transfer.rs:26
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+#: src/widgets/receive_transfer.rs:68
+msgid "Receiving"
+msgstr "Recebendo"
+
+#: src/widgets/receive_transfer.rs:71 src/widgets/receive_transfer.rs:206
+#: src/widgets/recipient_card.rs:316
+msgid "Cancel"
+msgstr "Cancelar"
+
+#: src/widgets/receive_transfer.rs:153 src/widgets/receive_transfer.rs:451
+msgid "Incoming Transfer"
+msgstr "Transferência de entrada"
+
+#: src/widgets/receive_transfer.rs:201
+msgid "Receiving..."
+msgstr "Recebendo..."
+
+#: src/widgets/receive_transfer.rs:284 src/widgets/receive_transfer.rs:458
+msgid "Decline"
+msgstr "Declínio"
+
+#: src/widgets/receive_transfer.rs:285 src/widgets/receive_transfer.rs:462
+msgid "Accept"
+msgstr "Aceitar"
+
+#. Translators: An e.g. "6 Files (42.3MB)"
+#: src/widgets/receive_transfer.rs:316
+msgid "{} file ({})"
+msgid_plural "{} files ({})"
+msgstr[0] "{} arquivo ({})"
+msgstr[1] "{} arquivos ({})"
+
+#: src/widgets/receive_transfer.rs:335
+msgid "Preview ({})"
+msgstr "Visualizar ({})"
+
+#. Translators: This is the pin-code for the transfer
+#: src/widgets/receive_transfer.rs:351 src/widgets/recipient_card.rs:448
+msgid "Code: {}"
+msgstr "Código: {}"
+
+#: src/widgets/receive_transfer.rs:412
+msgid "Request timed out"
+msgstr "A solicitação expirou"
+
+#. Translators: This is when some device is sharing files or text
+#. e.g. (Someone's Phone wants to share 4 files)
+#. e.g. (Someone's Phone wants to share "lorem ipsum ...")
+#: src/widgets/receive_transfer.rs:425
+msgid "{} wants to share {}"
+msgstr "{} quer compartilhar {}"
+
+#. Translators: {} will be replaced with an estimated remaining time string
+#. e.g. "About 4 minutes 32 seconds left"
+#: src/widgets/receive_transfer.rs:502 src/widgets/recipient_card.rs:478
+msgid "About {} left"
+msgstr "Cerca de {} restantes"
+
+#: src/widgets/receive_transfer.rs:527
+msgid "Unexpected dissconnection"
+msgstr "Desconexão inesperada"
+
+#: src/widgets/receive_transfer.rs:560
+msgid "Transfer cancelled by sender"
+msgstr "Transferência cancelada pelo remetente"
+
+#: src/widgets/receive_transfer.rs:607
+msgid "Copy to clipboard"
+msgstr "Copiar para a área de transferência"
+
+#: src/widgets/receive_transfer.rs:615
+msgid "Save text as file"
+msgstr "Salvar texto como arquivo"
+
+#: src/widgets/receive_transfer.rs:766
+msgid "Received \"{}\""
+msgstr "Você recebeu \"{}\""
+
+#: src/widgets/receive_transfer.rs:781
+msgid "Copy"
+msgstr "Copiar"
+
+#: src/widgets/receive_transfer.rs:796
+msgid "{} file received"
+msgid_plural "{} files received"
+msgstr[0] "{} arquivo recebido"
+msgstr[1] "{} arquivos recebidos"
+
+#: src/widgets/recipient_card.rs:227
+msgid "Unavailable"
+msgstr "Indisponível"
+
+#: src/widgets/recipient_card.rs:250
+msgid "Queued"
+msgstr "Na fila"
+
+#: src/widgets/recipient_card.rs:297
+msgid "Retry"
+msgstr "Tentar novamente"
+
+#: src/widgets/recipient_card.rs:442
+msgid "Requested"
+msgstr "Solicitado"
+
+#: src/widgets/recipient_card.rs:504
+msgid "Failed"
+msgstr "Fracassado"
+
+#: src/widgets/recipient_card.rs:547
+msgid "Sent {} file"
+msgid_plural "Sent {} files"
+msgstr[0] "Arquivo {} enviado"
+msgstr[1] "Arquivos {} enviados"
+
+#: src/window.rs:530
+msgid "Couldn't update the Nautilus plugin"
+msgstr "Não foi possível atualizar o plugin do Nautilus"
+
+#: src/window.rs:647 src/window.rs:1036
+msgid "Packet cannot run in the background"
+msgstr "O Packet não pode executar em segundo plano"
+
+#: src/window.rs:683
+msgid "Packet cannot run at login"
+msgstr "O Packet não pode iniciar junto à sessão"
+
+#: src/window.rs:748
+msgid "Can't rename device during an active transfer"
+msgstr "Não é possível renomear o dispositivo durante uma transferência ativa"
+
+#: src/window.rs:889
+msgid "Invalid Port"
+msgstr "Porta inválida"
+
+#: src/window.rs:893
+msgid "The chosen static port \"{}\" is not available. Try a different port above 1024."
+msgstr "A porta estática escolhida \"{}\" está indisponível. Tente uma porta diferente acima de 1024."
+
+#: src/window.rs:901
+msgid "_Ok"
+msgstr "_Ok"
+
+#: src/window.rs:949
+msgid "Can't access Downloads folder"
+msgstr "Não foi possível acessar a pasta de downloads"
+
+#: src/window.rs:950
+msgid "Pick Folder"
+msgstr "Escolha uma pasta"
+
+#: src/window.rs:977
+msgid "Packet wants to run in the background"
+msgstr "O Packet quer executar em segundo plano"
+
+#: src/window.rs:1189
+msgid "Plugin Installed"
+msgstr "Plugin instalado"
+
+#: src/window.rs:1193
+msgid "Done"
+msgstr "Concluído"
+
+#: src/window.rs:1209
+msgid "The plugin was installed successfully, but requires the following packages to function: {}"
+msgstr "O plugin foi instalado com sucesso, mas requer os seguintes pacotes para funcionar: {}"
+
+#: src/window.rs:1225
+msgid "Package names may vary by distribution, visit <a {}>this link</a> for details."
+msgstr "Os nomes dos pacotes podem variar conforme a distribuição, visite <a {}>esse link</a> para detalhes."
+
+#: src/window.rs:1240
+msgid "Once that's done, restart Nautilus (e.g., by logging out and back in) to load the plugin."
+msgstr "Assim que isso estiver pronto, reinicie o Nautilus (ex., encerrando a sessão e logando-se novamente) para carregar o plugin."
+
+#: src/window.rs:1250
+msgid "Installation Failed"
+msgstr "A instalação falhou"
+
+#: src/window.rs:1254
+msgid "Close"
+msgstr "Fechar"
+
+#: src/window.rs:1268
+msgid "Plugin installation failed. Make sure the following directory exists and is accessible by Packet:"
+msgstr "A instalação do plugin falhou. Certifique-se de que a pasta a seguir existe e está acessível ao Packet:"
+
+#: src/window.rs:1367
+msgid "Copied log to clipboard"
+msgstr "Relatório copiado para a área de transferência"
+
+#: src/window.rs:1649
+msgid "Ready"
+msgstr "Pronto"
+
+#: src/window.rs:1656
+msgid "Visible as {:?}"
+msgstr "Visível como {:?}"
+
+#: src/window.rs:1662
+msgid "Invisible"
+msgstr "Invisível"
+
+#: src/window.rs:1668
+msgid "No new devices can share with you"
+msgstr "Nenhum novo dispositivo pode compartilhar com você"
+
+#: src/window.rs:1673
+msgid "Disconnected"
+msgstr "Desconectado"
+
+#: src/window.rs:1679
+msgid "Connect to Wi-Fi and turn on Bluetooth"
+msgstr "Conecte-se ao Wi-Fi e ative o Bluetooth"
+
+#: src/window.rs:1682
+msgid "Connect to Wi-Fi"
+msgstr "Conecte-se ao Wi-Fi"
+
+#: src/window.rs:1685
+msgid "Turn on Bluetooth"
+msgstr "Ative o Bluetooth"
+
+#: src/window.rs:1750
+msgid "Couldn't open files"
+msgstr "Não foi possível abrir os arquivos"
+
+#: data/resources/plugins/packet_nautilus.py.in:120
+msgid "Send with Packet"
+msgstr "Enviar com o Packet"
+
+#: data/io.github.ricky688.PacketLab.desktop.in.in:3
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:7
+msgid "Share files easily"
+msgstr "Compartilhe arquivos facilmente"
+
+#. Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+#: data/io.github.ricky688.PacketLab.desktop.in.in:9
+msgid "Gnome;GTK;Quick;Nearby;Share;"
+msgstr "Gnome;GTK;Quick;Nearby;Share;"
+
+#. Trasnlators: The gschema strings won't be used in the app directly and aren't a priority
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:7
+msgid "Window width"
+msgstr "Largura da janela"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:11
+msgid "Window height"
+msgstr "Altura da janela"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:15
+msgid "Window maximized state"
+msgstr "Estado maximizado da janela"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:19
+msgid "Device name"
+msgstr "Nome do dispositivo"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:23
+msgid "Device visibility"
+msgstr "Visibilidade do dispositivo"
+
+#: data/io.github.ricky688.PacketLab.gschema.xml.in:27
+msgid "Download folder"
+msgstr "Pasta de download"
+
+#. Trasnlators: The metainfo strings are for Flathub and aren't a priority
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:10
+msgid "Send and receive files wirelessly with Android devices using Quick Share or another device with Packet installed."
+msgstr "Envie e receba arquivos sem fio com dispositivos Android usando o Quick Share ou outro dispositivo com o Packet instalado."
+
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:11
+msgid "Packet requires Bluetooth to be enabled and the devices to be connected to a Wi-Fi network with mDNS."
+msgstr "O pacote requer que o Bluetooth esteja habilitado e que os dispositivos estejam conectados a uma rede Wi-Fi com mDNS."
+
+#. Trasnlators: These are captions for the screenshots on Flathub
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:18
+msgid "Sent Share Request"
+msgstr "Enviado pedido de compartilhamento"
+
+#: data/io.github.ricky688.PacketLab.metainfo.xml.in.in:26
+msgid "Received Share Request"
+msgstr "Solicitação de compartilhamento recebida"
+
+#~ msgctxt "shortcut window"
+#~ msgid "Show Shortcuts"
+#~ msgstr "Exibir Atalhos"
+
+#~ msgid "Send"
+#~ msgstr "Enviar"
+
+#~ msgid "Copy error report"
+#~ msgstr "Copiar relatório de erro"
+
+#~ msgid "Copied error report to clipboard"
+#~ msgstr "Relatório de erro copiado para a área de transferência"
+
+#, fuzzy
+#~| msgid "{} file ({})"
+#~| msgid_plural "{} files ({})"
+#~ msgid "{} file"
+#~ msgid_plural "{} files"
+#~ msgstr[0] "{} arquivo ({})"
+#~ msgstr[1] "{} arquivos ({})"
+
+#~ msgid "Network"
+#~ msgstr "Rede"
+
+#~ msgid ""
+#~ "Make sure the other device is visible and connected to the same network as this device.\n"
+#~ "\n"
+#~ "If it's an Android device and you still don't see it despite setting visibility to \"Everyone\", try opening the <b>Quick Share</b> page from the <b>Google Files</b> app and leave it open.\n"
+#~ "\n"
+#~ "Also, ensure Bluetooth is enabled on both devices, as it's often required for device discovery even over Wi-Fi."
+#~ msgstr ""
+#~ "Certifique-se de que o outro dispositivo esteja visível e conectado à mesma rede que este.\n"
+#~ "\n"
+#~ "Se for um dispositivo Android e você ainda não o vir, mesmo com a visibilidade definida como \"Todos\", tente abrir a página do <b>Compartilhamento rápido</b> no aplicativo <b>Arquivos do Google</b> e deixe-a aberta.\n"
+#~ "\n"
+#~ "Além disso, certifique-se de que o Bluetooth esteja ativado em ambos os dispositivos, pois ele geralmente é necessário para a descoberta de dispositivos, mesmo via Wi-Fi."
+
+#~ msgid "Unimplemented"
+#~ msgstr "Não implementado"
+
+#~ msgid "Home Page"
+#~ msgstr "Página inicial"
+
+#~ msgid "Added Dutch translation"
+#~ msgstr "Adicionada tradução holandesa"

@@ -1,0 +1,13 @@
+name: Bug report
+description: Report a Packet Lab problem
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Include version, Linux distribution, device versions, network type, and whether discovery or manual connection was used.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Relevant diagnostic excerpt
+      description: Redact names, local paths, addresses, identifiers and private content before sharing. Never include credentials or proprietary binaries.

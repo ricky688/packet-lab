@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>@app-id@</id>
+  <metadata_license>CC0</metadata_license>
+  <project_license>GPL-3.0+</project_license>
+  <name>Packet Lab</name>
+  <summary>Share files easily</summary>
+  <description>
+    <!-- Translators: The metainfo strings are for Flathub and aren't a priority -->
+    <p>Send and receive files wirelessly with Android devices using Quick Share or another compatible device.</p>
+    <p>Use local discovery or enter a confirmed IPv4 address and Quick Share port when discovery is unavailable.</p>
+  </description>
+
+
+
+
+  <url type="homepage">https://github.com/nozwock/packet</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0-alpha.1" date="2026-10-22">
+      <description><p>Initial local experimental release with manual connection.</p></description>
+    </release>
+  </releases>
+
+
+  <developer id="io.github">
+    <name translate="no">ricky688</name>
+  </developer>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#c3f1c0</color>
+    <color type="primary" scheme_preference="dark">#2f8a60</color>
+  </branding>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <translation type="gettext">@gettext-package@</translation>
+  <launchable type="desktop-id">@app-id@.desktop</launchable>
+</component>

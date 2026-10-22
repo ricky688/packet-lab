@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<releases>
+  <release version="0.1.0-alpha.1" date="2026-10-22">
+    <description>
+      <p>First experimental Packet Lab release, based on Packet 0.7.3.</p>
+      <ul>
+        <li>Separate application identity, settings, cache and executable.</li>
+        <li>Manual local IPv4 and port connection with normal pairing.</li>
+        <li>Bounded connection attempts and visible connection failure.</li>
+      </ul>
+    </description>
+  </release>
+</releases>

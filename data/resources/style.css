@@ -1,0 +1,13 @@
+.title-header {
+  font-size: 36px;
+  font-weight: bold;
+}
+
+.command_snippet {
+  color: var(--view-fg-color);
+  background: var(--view-bg-color);
+  font-family: monospace;
+  border-radius: 6px;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+}
