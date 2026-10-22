@@ -54,4 +54,6 @@ The default receiver uses a dynamically allocated TCP port. Discovery may work w
 
 This is an alpha experiment. School-network compatibility, Wi-Fi Direct/BWU and mid-transfer resume are not promised. A manual address can help when multicast discovery is unavailable; it cannot fix network isolation that also blocks TCP. Bluetooth remains discovery-related and is not a complete alternate transfer transport.
 
+Outgoing transfers remain in progress after the final payload chunk until the receiver closes the transfer connection. Receiver errors and a 30-second finalization timeout fail the transfer. This follows the receiver-driven completion ordering in Google Nearby's `OutgoingShareSession::DelayComplete`; the latest change still needs a real Windows Quick Share retest.
+
 Source attribution and licenses are in [UPSTREAM.md](UPSTREAM.md) and [LICENSE](LICENSE). No proprietary Nearby binaries, private device logs or school credentials are included. This local build has not been uploaded to GitHub or published to Flathub.

@@ -15,10 +15,11 @@ use p256::{EncodedPoint, PublicKey};
 use prost::Message;
 use rand::Rng;
 use sha2::{Digest, Sha256, Sha512};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::broadcast::{Receiver, Sender};
+use tokio::time::Instant;
 
 use super::info::{InternalFileInfo, TransferMetadata, TransferPayload, TransferPayloadKind};
 use super::{InnerState, TextPayloadInfo, TextPayloadType, TransferState};
@@ -71,6 +72,7 @@ pub struct OutboundRequest {
     sender: Sender<ChannelMessage>,
     receiver: Receiver<ChannelMessage>,
     payload: OutboundPayload,
+    completion_deadline: Option<Instant>,
 }
 
 impl OutboundRequest {
@@ -137,6 +139,7 @@ impl OutboundRequest {
             sender,
             receiver,
             payload,
+            completion_deadline: None,
         }
     }
 
@@ -144,7 +147,14 @@ impl OutboundRequest {
         // Buffer for the 4-byte length
         let mut length_buf = [0u8; 4];
 
+        let completion_deadline = self.completion_deadline;
         tokio::select! {
+            _ = async {
+                match completion_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return Err(anyhow!("Receiver did not finish the transfer within 30 seconds")),
             i = self.receiver.recv() => {
                 match i {
                     Ok(channel_msg) => {
@@ -174,10 +184,25 @@ impl OutboundRequest {
                     }
                 }
             },
-            h = stream_read_exact(&mut self.socket, &mut length_buf) => {
-                h?;
-
-                self._handle(length_buf).await?
+            ready = self.socket.readable() => {
+                ready?;
+                let read_frame = async {
+                    // Channel events must not discard a partially read frame header.
+                    if self.socket.read(&mut length_buf[..1]).await? == 0 {
+                        if self.completion_deadline.is_some() {
+                            return self.receiver_completed().await;
+                        }
+                        return Err(anyhow!("Receiver closed before all payloads were sent"));
+                    }
+                    stream_read_exact(&mut self.socket, &mut length_buf[1..]).await?;
+                    self._handle(length_buf).await
+                };
+                if let Some(deadline) = completion_deadline {
+                    tokio::time::timeout_at(deadline, read_frame).await
+                        .map_err(|_| anyhow!("Receiver did not finish the transfer within 30 seconds"))??;
+                } else {
+                    read_frame.await?;
+                }
             }
         }
 
@@ -480,6 +505,10 @@ impl OutboundRequest {
         }
 
         let offline = location_nearby_connections::OfflineFrame::decode(d2d_msg.message())?;
+        self.process_offline_frame(&offline).await
+    }
+
+    async fn process_offline_frame(&mut self, offline: &OfflineFrame) -> Result<(), anyhow::Error> {
         let v1_frame = offline
             .v1
             .as_ref()
@@ -496,6 +525,35 @@ impl OutboundRequest {
                     .payload_header
                     .as_ref()
                     .ok_or_else(|| anyhow!("Missing required fields"))?;
+                if payload_transfer.packet_type() == PacketType::Control {
+                    let control = payload_transfer
+                        .control_message
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("Missing payload control message"))?;
+                    let known = self.state.transferred_files.contains_key(&header.id())
+                        || self
+                            .state
+                            .text_payload
+                            .as_ref()
+                            .is_some_and(|payload| payload.get_i64_value() == header.id());
+                    if known {
+                        use crate::location_nearby_connections::payload_transfer_frame::control_message::EventType;
+                        match control.event() {
+                            EventType::PayloadError | EventType::PayloadCanceled => {
+                                return Err(anyhow!(
+                                    "Receiver rejected payload {}: {:?}",
+                                    header.id(),
+                                    control.event()
+                                ));
+                            }
+                            EventType::PayloadReceivedAck => {
+                                debug!("Receiver acknowledged payload {}", header.id());
+                            }
+                            EventType::UnknownEventType => {}
+                        }
+                    }
+                    return Ok(());
+                }
                 let chunk = payload_transfer
                     .payload_chunk
                     .as_ref()
@@ -555,6 +613,14 @@ impl OutboundRequest {
                         )
                     }
                 }
+            }
+            location_nearby_connections::v1_frame::FrameType::Disconnection => {
+                if self.completion_deadline.is_some() {
+                    return self.receiver_completed().await;
+                }
+                return Err(anyhow!(
+                    "Receiver disconnected before all payloads were sent"
+                ));
             }
             location_nearby_connections::v1_frame::FrameType::KeepAlive => {
                 trace!("Sending keepalive");
@@ -900,16 +966,7 @@ impl OutboundRequest {
                         )
                         .await;
 
-                        // Mark as finished
-                        info!("Text transfer finished");
-                        self.update_state(
-                            |e| {
-                                e.state = TransferState::Finished;
-                            },
-                            true,
-                        )
-                        .await;
-                        self.disconnection().await?;
+                        self.wait_for_receiver_completion();
                         return Ok(());
                     }
                 }
@@ -924,16 +981,7 @@ impl OutboundRequest {
                     let current = match ids_iter.next() {
                         Some(i) => i,
                         None => {
-                            info!("All files have been transferred");
-                            self.update_state(
-                                |e| {
-                                    e.state = TransferState::Finished;
-                                },
-                                true,
-                            )
-                            .await;
-                            self.disconnection().await?;
-                            // Breaking instead of NotAnError to allow peacefull termination
+                            self.wait_for_receiver_completion();
                             break;
                         }
                     };
@@ -1140,6 +1188,19 @@ impl OutboundRequest {
         }
 
         Ok(())
+    }
+
+    fn wait_for_receiver_completion(&mut self) {
+        // Google Nearby DelayComplete leaves finalization and disconnect to the receiver.
+        info!("All payload bytes sent; waiting for receiver to finish");
+        self.completion_deadline = Some(Instant::now() + Duration::from_secs(30));
+    }
+
+    async fn receiver_completed(&mut self) -> Result<(), anyhow::Error> {
+        self.completion_deadline = None;
+        self.update_state(|state| state.state = TransferState::Finished, true)
+            .await;
+        Err(anyhow!(crate::errors::AppError::NotAnError))
     }
 
     async fn disconnection(&mut self) -> Result<(), anyhow::Error> {
@@ -1451,5 +1512,226 @@ impl OutboundRequest {
         // some spare time to process channel's message. Otherwise it
         // get spammed by new requests. Currently set to 10 micro secs.
         tokio::time::sleep(SANITY_DURATION).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+    use tokio::sync::broadcast;
+
+    async fn text_sender() -> (OutboundRequest, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let (events, _) = broadcast::channel(50);
+        let mut request = OutboundRequest::new(
+            *b"TEST",
+            socket,
+            "test-peer".into(),
+            events,
+            OutboundPayload::Text {
+                text: "test".into(),
+                text_type: TextPayloadType::Text,
+            },
+            RemoteDeviceInfo {
+                name: "test-peer".into(),
+                device_type: DeviceType::Laptop,
+            },
+        );
+        request.state.encrypt_key = Some(vec![1; 32]);
+        request.state.send_hmac_key = Some(vec![2; 32]);
+        request.state.text_payload = Some(TextPayloadInfo::Text(42));
+        (request, peer)
+    }
+
+    fn consent() -> sharing_nearby::V1Frame {
+        sharing_nearby::V1Frame {
+            r#type: Some(sharing_nearby::v1_frame::FrameType::Response.into()),
+            connection_response: Some(sharing_nearby::ConnectionResponseFrame {
+                status: Some(sharing_nearby::connection_response_frame::Status::Accept.into()),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn sent_bytes_are_not_reported_as_receiver_completion() {
+        let (mut request, _peer) = text_sender().await;
+        request.process_consent(&consent()).await.unwrap();
+        assert_eq!(request.state.state, TransferState::SendingFiles);
+    }
+
+    async fn drain_payload(peer: &mut TcpStream) {
+        for _ in 0..2 {
+            let len = peer.read_u32().await.unwrap();
+            assert!(len < SANE_FRAME_LENGTH as u32);
+            let mut bytes = vec![0; len as usize];
+            peer.read_exact(&mut bytes).await.unwrap();
+        }
+    }
+
+    async fn next_error(request: &mut OutboundRequest) -> anyhow::Error {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(error) = request.handle().await {
+                    return error;
+                }
+            }
+        })
+        .await
+        .expect("request must terminate")
+    }
+
+    #[tokio::test]
+    async fn receiver_closure_completes_without_a_sender_disconnect() {
+        let (mut request, mut peer) = text_sender().await;
+        request.process_consent(&consent()).await.unwrap();
+        drain_payload(&mut peer).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), peer.read_u8())
+                .await
+                .is_err()
+        );
+        peer.shutdown().await.unwrap();
+        let result = next_error(&mut request).await;
+        assert!(result.downcast_ref::<crate::errors::AppError>().is_some());
+        assert_eq!(request.state.state, TransferState::Finished);
+    }
+
+    #[tokio::test]
+    async fn file_transfer_waits_for_receiver_and_timeout_is_not_success() {
+        let (mut request, mut peer) = text_sender().await;
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let file = File::open(&path).unwrap();
+        request.payload = OutboundPayload::Files(vec![path.to_string_lossy().into_owned()]);
+        request.state.text_payload = None;
+        request.state.transferred_files.insert(
+            7,
+            InternalFileInfo {
+                payload_id: 7,
+                total_size: file.metadata().unwrap().len() as i64,
+                bytes_transferred: 0,
+                file_url: path,
+                file: Some(file),
+            },
+        );
+        request.process_consent(&consent()).await.unwrap();
+        drain_payload(&mut peer).await;
+        assert_eq!(request.state.state, TransferState::SendingFiles);
+        request.completion_deadline = Some(Instant::now());
+        assert!(
+            next_error(&mut request)
+                .await
+                .to_string()
+                .contains("within 30 seconds")
+        );
+        assert_ne!(request.state.state, TransferState::Finished);
+    }
+
+    fn control_frame(id: i64, event: i32) -> OfflineFrame {
+        OfflineFrame {
+            v1: Some(location_nearby_connections::V1Frame {
+                r#type: Some(
+                    location_nearby_connections::v1_frame::FrameType::PayloadTransfer.into(),
+                ),
+                payload_transfer: Some(PayloadTransferFrame {
+                    packet_type: Some(PacketType::Control.into()),
+                    payload_header: Some(PayloadHeader {
+                        id: Some(id),
+                        ..Default::default()
+                    }),
+                    control_message: Some(
+                        location_nearby_connections::payload_transfer_frame::ControlMessage {
+                            event: Some(event),
+                            ..Default::default()
+                        },
+                    ),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn receiver_control_messages_are_not_mistaken_for_data_chunks() {
+        use crate::location_nearby_connections::payload_transfer_frame::control_message::EventType;
+        let (mut request, _peer) = text_sender().await;
+        request.process_consent(&consent()).await.unwrap();
+        request
+            .process_offline_frame(&control_frame(42, EventType::PayloadReceivedAck.into()))
+            .await
+            .unwrap();
+        assert_eq!(request.state.state, TransferState::SendingFiles);
+        request
+            .process_offline_frame(&control_frame(999, EventType::PayloadError.into()))
+            .await
+            .unwrap();
+        for event in [EventType::PayloadError, EventType::PayloadCanceled] {
+            assert!(
+                request
+                    .process_offline_frame(&control_frame(42, event.into()))
+                    .await
+                    .is_err()
+            );
+            assert_ne!(request.state.state, TransferState::Finished);
+        }
+    }
+
+    #[tokio::test]
+    async fn incomplete_frame_after_payload_is_not_success() {
+        let (mut request, mut peer) = text_sender().await;
+        request.process_consent(&consent()).await.unwrap();
+        drain_payload(&mut peer).await;
+        peer.write_all(&[0, 0]).await.unwrap();
+        peer.shutdown().await.unwrap();
+        assert!(
+            next_error(&mut request)
+                .await
+                .downcast_ref::<std::io::Error>()
+                .is_some()
+        );
+        assert_ne!(request.state.state, TransferState::Finished);
+    }
+
+    #[tokio::test]
+    async fn receiver_disconnect_frame_finishes_only_after_payload() {
+        let frame = OfflineFrame {
+            v1: Some(location_nearby_connections::V1Frame {
+                r#type: Some(
+                    location_nearby_connections::v1_frame::FrameType::Disconnection.into(),
+                ),
+                disconnection: Some(Default::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (mut request, _peer) = text_sender().await;
+        assert!(request.process_offline_frame(&frame).await.is_err());
+        assert_ne!(request.state.state, TransferState::Finished);
+        request.process_consent(&consent()).await.unwrap();
+        assert!(request.process_offline_frame(&frame).await.is_err());
+        assert_eq!(request.state.state, TransferState::Finished);
+    }
+
+    #[tokio::test]
+    async fn stalled_partial_frame_does_not_bypass_completion_deadline() {
+        let (mut request, mut peer) = text_sender().await;
+        request.process_consent(&consent()).await.unwrap();
+        drain_payload(&mut peer).await;
+        peer.write_all(&[0, 0]).await.unwrap();
+        request.completion_deadline = Some(Instant::now() + Duration::from_millis(30));
+        assert!(
+            next_error(&mut request)
+                .await
+                .to_string()
+                .contains("within 30 seconds")
+        );
+        assert_ne!(request.state.state, TransferState::Finished);
     }
 }
