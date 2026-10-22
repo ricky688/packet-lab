@@ -17,6 +17,16 @@ Extract the Linux x86_64 archive and run `./packet-lab` from its folder. This is
 
 Only private/link-local IPv4 addresses with an explicit port are accepted. A connection failure is shown as Failed; the existing retry action can try again. No automatic scanning or arbitrary TXT-address fallback is added.
 
+## Thunar right-click sharing
+
+The native bundle includes `packet-lab-send` (Python 3 with PyGObject/Gio required). In Thunar's **Edit → Configure custom actions**, add an action named **Send with Packet Lab**. Use the absolute path to the bundle helper followed by unquoted `%F`, for example:
+
+```text
+"/path/to/bundle/packet-lab-send" %F
+```
+
+Set the file pattern to `*`, enable all file categories, and leave directories disabled. Multi-selection and spaces in filenames are supported. The helper starts Packet Lab if needed and opens its recipient picker; it never chooses a recipient automatically. Keep the bundle in the same location or update the action's command after moving it.
+
 VPNs can remain enabled, but successful local sharing depends on their routing/firewall policy. Local-interface sockets travel outside the VPN tunnel. For a peer that needs an explicitly selected Linux interface, start with `RQS_LAN_ROUTE='192.168.1.2%wlan0' ./packet-lab`. This applies only to that peer; other traffic keeps system routing. It does not override a VPN firewall or support a requirement that the file itself travel inside the VPN tunnel.
 
 ## Build and test

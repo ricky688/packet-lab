@@ -19,6 +19,7 @@ mkdir -p "$bundle/bin" "$bundle/share/packet-lab" "$bundle/share/glib-2.0/schema
 install -m 755 "$target_dir/release/packet-lab" "$bundle/bin/packet-lab"
 strip --strip-unneeded "$bundle/bin/packet-lab"
 install -m 755 scripts/bundle-launcher.sh "$bundle/packet-lab"
+install -m 755 scripts/packet-lab-send "$bundle/packet-lab-send"
 install -m 644 _build/data/resources/resources.gresource _build/src/ui-resources.gresource "$bundle/share/packet-lab/"
 install -m 644 _build/data/*.gschema.xml _build/data/gschemas.compiled "$bundle/share/glib-2.0/schemas/"
 install -m 644 data/icons/io.github.ricky688.PacketLab.svg "$bundle/share/icons/hicolor/scalable/apps/"
