@@ -2,6 +2,8 @@
 
 ## Bluetooth / Wi-Fi experiment — 2026-10-23
 
+- Publish a receiving FEF3 BLE advertisement and GATT endpoint slot, fixing Nearby discovery of the Linux receiver; complete incoming transfer verification remains pending.
+
 - Discover Nearby Bluetooth endpoints and connect with RFCOMM without entering an IP.
 - Follow receiver-initiated Wi-Fi LAN upgrade while retaining session encryption and sequence numbers; bound handover waiting and keep the TCP listener responsive.
 - Distinguish same-name Bluetooth cards by address and restore adapter settings on normal application quit.
