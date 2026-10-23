@@ -13,8 +13,8 @@ use p256::{EncodedPoint, PublicKey};
 use prost::Message;
 use rand::Rng;
 use sha2::{Digest, Sha256, Sha512};
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use tokio::sync::broadcast::{Receiver, Sender};
 
 use super::{InnerState, TransferState};
@@ -49,18 +49,25 @@ const SANITY_DURATION: Duration = Duration::from_micros(10);
 
 #[derive(Debug)]
 pub struct InboundRequest {
-    socket: TcpStream,
+    pub(crate) upgrade: crate::bwu::Upgrade,
+    socket: crate::transport::Transport,
     pub state: InnerState,
     sender: Sender<ChannelMessage>,
     receiver: Receiver<ChannelMessage>,
+    deferred_consent: bool,
 }
 
 impl InboundRequest {
-    pub fn new(socket: TcpStream, id: String, sender: Sender<ChannelMessage>) -> Self {
+    pub fn new(
+        socket: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
+        id: String,
+        sender: Sender<ChannelMessage>,
+    ) -> Self {
         let receiver = sender.subscribe();
 
         Self {
-            socket,
+            upgrade: Default::default(),
+            socket: crate::transport::Transport::new(socket),
             state: InnerState {
                 id,
                 server_seq: 0,
@@ -71,6 +78,7 @@ impl InboundRequest {
             },
             sender,
             receiver,
+            deferred_consent: false,
         }
     }
 
@@ -78,7 +86,14 @@ impl InboundRequest {
         // Buffer for the 4-byte length
         let mut length_buf = [0u8; 4];
 
+        let upgrade_deadline = self.upgrade.deadline;
         tokio::select! {
+            _ = async {
+                match upgrade_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return Err(anyhow!("Wi-Fi handover timed out")),
             i = self.receiver.recv() => {
                 match i {
                     Ok(channel_msg) => {
@@ -90,7 +105,10 @@ impl InboundRequest {
                             debug!("inbound: got: {:?}", channel_msg);
                             match action {
                                 TransferAction::ConsentAccept => {
-                                    self.accept_transfer().await?;
+                                    if self.upgrade.bluetooth && !self.upgrade.complete {
+                                        self.deferred_consent = true;
+                                        if let Some(offer) = self.upgrade.offer()? { self.encrypt_and_send(&offer).await?; }
+                                    } else { self.accept_transfer().await?; }
                                 },
                                 TransferAction::ConsentDecline => {
                                     self.update_state(
@@ -124,10 +142,16 @@ impl InboundRequest {
                     }
                 }
             },
-            h = stream_read_exact(&mut self.socket, &mut length_buf) => {
-                h?;
-
-                self._handle(length_buf).await?
+            first = self.socket.read(&mut length_buf[..1]) => {
+                if first? == 0 { return Err(anyhow!("Peer closed the incoming session")); }
+                let read_frame = async {
+                    stream_read_exact(&mut self.socket, &mut length_buf[1..]).await?;
+                    self._handle(length_buf).await
+                };
+                if let Some(deadline) = upgrade_deadline {
+                    tokio::time::timeout_at(deadline, read_frame).await
+                        .map_err(|_| anyhow!("Wi-Fi handover timed out"))??;
+                } else { read_frame.await?; }
             }
         }
 
@@ -152,7 +176,19 @@ impl InboundRequest {
             TransferState::Initial => {
                 debug!("Handling State::Initial frame");
                 let frame = location_nearby_connections::OfflineFrame::decode(&*frame_data)?;
+                if !self.upgrade.bluetooth {
+                    if let Some(context) = &self.upgrade.context {
+                        if context.route_introduction(&frame, &mut self.socket).await? {
+                            return Err(anyhow!(crate::errors::AppError::NotAnError));
+                        }
+                    }
+                }
                 let rdi = self.process_connection_request(&frame)?;
+                self.upgrade.remote = frame
+                    .v1
+                    .as_ref()
+                    .and_then(|v| v.connection_request.as_ref())
+                    .and_then(|r| r.endpoint_id.clone());
                 info!("RemoteDeviceInfo: {:?}", &rdi);
 
                 // Advance current state
@@ -502,6 +538,31 @@ impl InboundRequest {
             .v1
             .as_ref()
             .ok_or_else(|| anyhow!("Missing required fields"))?;
+        if v1_frame.r#type()
+            == location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeNegotiation
+        {
+            let packet = v1_frame
+                .bandwidth_upgrade_negotiation
+                .as_ref()
+                .ok_or_else(|| anyhow!("Missing upgrade negotiation"))?;
+            match self.upgrade.handle(packet).await? {
+                crate::bwu::Action::Send(frames) => {
+                    for frame in frames {
+                        self.encrypt_and_send(&frame).await?;
+                    }
+                }
+                crate::bwu::Action::Switch => {
+                    self.upgrade.switch(&mut self.socket).await?;
+                    for frame in std::mem::take(&mut self.upgrade.deferred) {
+                        self.encrypt_and_send(&frame).await?;
+                    }
+                    if std::mem::take(&mut self.deferred_consent) {
+                        self.accept_transfer().await?;
+                    }
+                }
+            }
+            return Ok(());
+        }
         match v1_frame.r#type() {
             location_nearby_connections::v1_frame::FrameType::PayloadTransfer => {
                 trace!("Received FrameType::PayloadTransfer");
@@ -1285,6 +1346,20 @@ impl InboundRequest {
     }
 
     async fn encrypt_and_send(&mut self, frame: &OfflineFrame) -> Result<(), anyhow::Error> {
+        if self.upgrade.last_sent
+            && !self.upgrade.complete
+            && frame.v1.as_ref().is_some_and(|v| {
+                v.r#type()
+                    != location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeNegotiation
+            })
+        {
+            if self.upgrade.deferred.len() >= 32 {
+                return Err(anyhow!("Too many writes during Wi-Fi upgrade"));
+            }
+            self.upgrade.deferred.push(frame.clone());
+            return Ok(());
+        }
+
         let d2d_msg = DeviceToDeviceMessage {
             sequence_number: Some(self.get_server_seq_inc().await),
             message: Some(frame.encode_to_vec()),

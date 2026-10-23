@@ -8,10 +8,12 @@ use tokio::time::timeout;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// An explicit local route for one peer; all other peers retain system routing.
+#[derive(Clone)]
 pub(crate) struct Connector {
     route: Option<LanRoute>,
 }
 
+#[derive(Clone)]
 struct LanRoute {
     peer: Ipv4Addr,
     interface: String,

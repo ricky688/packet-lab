@@ -2154,8 +2154,12 @@ impl Window {
     }
 
     fn is_no_file_being_send(&self) -> bool {
-        !self.imp().recipient_model.iter::<SendRequestState>()
-            .filter_map(Result::ok).any(|request| request.is_active())
+        !self
+            .imp()
+            .recipient_model
+            .iter::<SendRequestState>()
+            .filter_map(Result::ok)
+            .any(|request| request.is_active())
     }
 
     async fn is_no_file_being_received(&self) -> bool {
@@ -2197,7 +2201,7 @@ impl Window {
         ))
     }
 
-    fn stop_rqs_service(&self) -> tokio::task::JoinHandle<()> {
+    pub(crate) fn stop_rqs_service(&self) -> tokio::task::JoinHandle<()> {
         let imp = self.imp();
 
         // Abort all looping tasks before closing

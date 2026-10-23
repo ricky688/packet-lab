@@ -5,6 +5,10 @@ edition = "2024"
 authors = ["martichou"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[example]]
+name = "send_bluetooth"
+required-features = ["experimental"]
+
 [[bin]]
 name = "core_bin"
 path = "src/bin.rs"

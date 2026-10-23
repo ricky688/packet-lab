@@ -22,11 +22,15 @@ use crate::hdl::BleListener;
 use crate::hdl::MDnsServer;
 use crate::manager::TcpServer;
 
-mod connection;
+#[cfg(all(feature = "experimental", target_os = "linux"))]
+mod bluetooth;
+mod bwu;
 pub mod channel;
+mod connection;
 pub mod errors;
 pub mod hdl;
 pub mod manager;
+pub mod transport;
 pub mod utils;
 
 pub use hdl::{EndpointInfo, OutboundPayload, TextPayloadType, TransferState, Visibility};
@@ -153,6 +157,38 @@ impl RQS {
             self.message_sender.clone(),
             send_channel.1,
         )?;
+        let upgrade = bwu::Context::new(endpoint_id[..4].try_into()?, binded_addr.port());
+        server.upgrade = Some(upgrade.clone());
+        #[cfg(all(feature = "experimental", target_os = "linux"))]
+        {
+            let (connects, requests) = mpsc::channel(8);
+            let (incoming, mut incoming_rx) = mpsc::channel(8);
+            server.bluetooth = Some(connects);
+            let name = self.get_device_name();
+            let visibility = self.visibility_receiver.clone();
+            let id = endpoint_id[..4].try_into()?;
+            let token = ctoken.clone();
+            tracker.spawn(async move {
+                if let Err(error) =
+                    bluetooth::run(id, name, visibility, requests, incoming, token).await
+                {
+                    warn!("Bluetooth Nearby service unavailable: {error}");
+                }
+            });
+            let sender = self.message_sender.clone();
+            let token = ctoken.clone();
+            let sessions = tracker.clone();
+            tracker.spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        Some((socket, id)) = incoming_rx.recv() => {
+                            sessions.spawn(manager::receive(socket, id, sender.clone(), token.clone(), Some(upgrade.clone()), true));
+                        }
+                    }
+                }
+            });
+        }
         let ctk = ctoken.clone();
         tracker.spawn(async move { server.run(ctk).await });
 
@@ -213,6 +249,16 @@ impl RQS {
             });
         }
 
+        #[cfg(all(feature = "experimental", target_os = "linux"))]
+        {
+            let sender = sender.clone();
+            let token = ctk.clone();
+            tracker.spawn(async move {
+                if let Err(error) = bluetooth::discover(sender, token).await {
+                    warn!("Bluetooth discovery: {error}");
+                }
+            });
+        }
         let discovery = MDnsDiscovery::new(sender)?;
         tracker.spawn(async move { discovery.run(ctk.clone()).await });
 

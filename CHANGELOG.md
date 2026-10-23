@@ -1,5 +1,12 @@
 # Changelog
 
+## Bluetooth / Wi-Fi experiment — 2026-10-23
+
+- Discover Nearby Bluetooth endpoints and connect with RFCOMM without entering an IP.
+- Follow receiver-initiated Wi-Fi LAN upgrade while retaining session encryption and sequence numbers; bound handover waiting and keep the TCP listener responsive.
+- Distinguish same-name Bluetooth cards by address and restore adapter settings on normal application quit.
+- Verified a 16 MiB Nearby phone transfer on school Wi-Fi with both VPNs enabled and matching SHA-256. See `docs/BLUETOOTH-WIFI.md` for remaining limits.
+
 ## Local fixes — 2026-10-23
 
 - Advertise a fully qualified `.local.` hostname in mDNS SRV and address records.

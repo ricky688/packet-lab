@@ -189,8 +189,15 @@ impl Application {
                 // On GNOME, closing the background app from their "Background Apps" UI seems to invoke app.quit
                 app.main_window().imp().should_quit.replace(true);
 
-                app.main_window().close();
-                app.quit();
+                glib::spawn_future_local(glib::clone!(
+                    #[weak]
+                    app,
+                    async move {
+                        let _ = app.main_window().stop_rqs_service().await;
+                        app.main_window().close();
+                        app.quit();
+                    }
+                ));
             })
             .build();
 

@@ -111,16 +111,23 @@ pub(crate) fn emit_send_request(win: &Window, model_item: &SendRequestState) {
                 .as_mut()
                 .expect("RQS .payload_sender must be set")
                 .send(rqs_lib::SendInfo {
+                    endpoint_id: (endpoint_info.id.starts_with("bluetooth://")
+                        && endpoint_info.fullname.len() == 4)
+                        .then(|| endpoint_info.fullname.clone()),
                     id: endpoint_info.id.clone(),
                     name: endpoint_info
                         .name
                         .clone()
                         .unwrap_or(gettext("Unknown device")),
-                    addr: format!(
-                        "{}:{}",
-                        endpoint_info.ip.clone().unwrap_or_default(),
-                        endpoint_info.port.clone().unwrap_or_default()
-                    ),
+                    addr: if endpoint_info.id.starts_with("bluetooth://") {
+                        endpoint_info.id.clone()
+                    } else {
+                        format!(
+                            "{}:{}",
+                            endpoint_info.ip.clone().unwrap_or_default(),
+                            endpoint_info.port.clone().unwrap_or_default()
+                        )
+                    },
                     ob: outbound_payload,
                 })
                 .await
@@ -248,6 +255,16 @@ pub fn create_recipient_card(
         .css_classes(["dimmed", "monospace"])
         .build();
     main_box.append(&title_label);
+    if let Some(address) = model_item.endpoint_info().id.strip_prefix("bluetooth://") {
+        main_box.append(
+            &gtk::Label::builder()
+                .halign(gtk::Align::Start)
+                .label(format!("Bluetooth · {address}"))
+                .css_classes(["dimmed", "caption"])
+                .selectable(true)
+                .build(),
+        );
+    }
     main_box.append(&result_label);
     main_box.append(&unavailability_label);
     main_box.append(&pincode_label);

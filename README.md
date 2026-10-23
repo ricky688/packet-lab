@@ -1,12 +1,20 @@
 # Packet Lab
 
-An experimental Linux Quick Share client based on [Packet](https://github.com/nozwock/packet), with a manual local-address fallback for networks where discovery is unavailable.
+An experimental Linux Quick Share client based on [Packet](https://github.com/nozwock/packet), with Bluetooth discovery and a manual local-address fallback for networks where multicast discovery is unavailable.
 
 Packet Lab has its own executable, application ID, settings, device name and log path, so it can run alongside Packet. It keeps the existing pairing, consent and encrypted transfer protocol.
 
 ## Run the native test bundle
 
 Extract the Linux x86_64 archive and run `./packet-lab` from its folder. This is a **native test bundle**, not a universal AppImage: it needs GTK 4.22 or newer, libadwaita 1.9 or newer, and compatible system libraries. See `BUILD-INFO.txt` in the bundle for the exact build environment. The first bundle is built on Arch Linux with glibc 2.44.
+
+## Send without entering an IP address
+
+Keep Bluetooth enabled and open Quick Share's receive screen on the phone. In **Send To…**, select its Bluetooth card, compare the pairing code and accept on the phone. The address shown below each Bluetooth name helps distinguish devices with the same name.
+
+Packet Lab establishes the encrypted Nearby session over Bluetooth Classic/RFCOMM. For large payloads it follows the receiver's Wi-Fi LAN upgrade negotiation, retaining the encryption keys and sequence numbers. Small payloads below Nearby's 1 MB threshold can remain on Bluetooth. The Nearby phone was verified with a 16 MiB Bluetooth-to-Wi-Fi transfer on the school network with both VPNs enabled; this is not a guarantee for other network policies.
+
+This first implementation supports encoded Nearby Bluetooth names and devices exposing Nearby's SDP service. A first connection may need pairing/service discovery in the system Bluetooth settings. BLE GATT slot discovery, Wi-Fi Direct, and Internet relaying are not implemented. Wi-Fi LAN handover still requires direct local TCP reachability. See [Bluetooth validation](docs/BLUETOOTH-WIFI.md).
 
 ## Send when discovery fails
 
@@ -15,7 +23,7 @@ Extract the Linux x86_64 archive and run `./packet-lab` from its folder. This is
 3. Enter the other device's confirmed local IPv4 address and Quick Share port, such as `192.168.1.2:53601`. The port is an example, not a guaranteed Android default.
 4. Keep the other device's receive screen open. Compare the pairing code and accept the request.
 
-Only private/link-local IPv4 addresses with an explicit port are accepted. A connection failure is shown as Failed; the existing retry action can try again. No automatic scanning or arbitrary TXT-address fallback is added.
+Only private/link-local IPv4 addresses with an explicit port are accepted. A connection failure is shown as Failed; the existing retry action can try again. No subnet scanning or arbitrary TXT-address fallback is added.
 
 ## Thunar right-click sharing
 
@@ -52,7 +60,7 @@ The default receiver uses a dynamically allocated TCP port. Discovery may work w
 
 ## Status
 
-This is an alpha experiment. School-network compatibility, Wi-Fi Direct/BWU and mid-transfer resume are not promised. A manual address can help when multicast discovery is unavailable; it cannot fix network isolation that also blocks TCP. Bluetooth remains discovery-related and is not a complete alternate transfer transport.
+This is an alpha experiment. Compatibility with every school network, Wi-Fi Direct and mid-transfer resume are not promised. A manual address can help when multicast discovery is unavailable; it cannot fix network isolation that also blocks TCP.
 
 Outgoing transfers remain in progress after the final payload chunk until the receiver closes the transfer connection. Receiver errors and a 30-second finalization timeout fail the transfer. This follows the receiver-driven completion ordering in Google Nearby's `OutgoingShareSession::DelayComplete`. File introductions include distinct nonzero attachment IDs for Google's receiver. A plain-text file and the original failing `.ps1` were successfully received by Windows Quick Share after these fixes; see `docs/REMOTE-COMPLETION.md` for evidence and limits.
 
