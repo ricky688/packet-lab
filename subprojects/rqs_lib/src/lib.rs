@@ -138,6 +138,8 @@ impl RQS {
             .take(4)
             .map(u8::from)
             .collect();
+        let endpoint_info =
+            utils::gen_mdns_endpoint_info(DeviceType::Laptop as u8, &self.get_device_name());
         let tcp_listener =
             TcpListener::bind(format!("0.0.0.0:{}", self.port_number.unwrap_or(0))).await?;
         let binded_addr = tcp_listener.local_addr()?;
@@ -164,13 +166,13 @@ impl RQS {
             let (connects, requests) = mpsc::channel(8);
             let (incoming, mut incoming_rx) = mpsc::channel(8);
             server.bluetooth = Some(connects);
-            let name = self.get_device_name();
+            let encoded_info = endpoint_info.clone();
             let visibility = self.visibility_receiver.clone();
             let id = endpoint_id[..4].try_into()?;
             let token = ctoken.clone();
             tracker.spawn(async move {
                 if let Err(error) =
-                    bluetooth::run(id, name, visibility, requests, incoming, token).await
+                    bluetooth::run(id, encoded_info, visibility, requests, incoming, token).await
                 {
                     warn!("Bluetooth Nearby service unavailable: {error}");
                 }
@@ -207,6 +209,7 @@ impl RQS {
         let mut mdns = MDnsServer::new(
             endpoint_id[..4].try_into()?,
             binded_addr.port(),
+            &endpoint_info,
             self.ble_sender.subscribe(),
             self.visibility_sender.clone(),
             self.visibility_receiver.clone(),

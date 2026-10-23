@@ -2,7 +2,7 @@ use crate::{
     DeviceType,
     hdl::{EndpointInfo, Visibility},
     transport::Transport,
-    utils::{gen_mdns_endpoint_info, parse_mdns_endpoint_info},
+    utils::parse_mdns_endpoint_info,
 };
 use anyhow::{Context, anyhow, bail};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -196,7 +196,7 @@ async fn advertise_receiving(
 
 pub(crate) async fn run(
     endpoint: [u8; 4],
-    name: String,
+    encoded_info: String,
     mut visibility: watch::Receiver<Visibility>,
     mut connects: mpsc::Receiver<Connect>,
     incoming: mpsc::Sender<(Stream, String)>,
@@ -207,7 +207,6 @@ pub(crate) async fn run(
     let old_alias = adapter.alias().await?;
     let old_visible = adapter.is_discoverable().await?;
     let old_timeout = adapter.discoverable_timeout().await?;
-    let encoded_info = gen_mdns_endpoint_info(DeviceType::Laptop as u8, &name);
     let endpoint_info = URL_SAFE_NO_PAD.decode(encoded_info)?;
     let alias = device_name(endpoint, &endpoint_info)?;
     let mut profile = session
@@ -299,6 +298,7 @@ pub(crate) async fn connect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::gen_mdns_endpoint_info;
     #[test]
     fn receiving_slot_contains_endpoint_info_and_classic_address() {
         let info = vec![7; 27];

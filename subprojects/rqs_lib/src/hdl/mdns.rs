@@ -8,7 +8,7 @@ use tokio::time::{Instant, interval_at};
 use tokio_util::sync::CancellationToken;
 
 use crate::DEVICE_NAME;
-use crate::utils::{DeviceType, gen_mdns_endpoint_info, gen_mdns_name};
+use crate::utils::gen_mdns_name;
 
 const INNER_NAME: &str = "MDnsServer";
 const TICK_INTERVAL: Duration = Duration::from_secs(60);
@@ -44,11 +44,12 @@ impl MDnsServer {
     pub fn new(
         endpoint_id: [u8; 4],
         service_port: u16,
+        endpoint_info: &str,
         ble_receiver: Receiver<()>,
         visibility_sender: Arc<Mutex<watch::Sender<Visibility>>>,
         visibility_receiver: watch::Receiver<Visibility>,
     ) -> Result<Self, anyhow::Error> {
-        let service_info = Self::build_service(endpoint_id, service_port, DeviceType::Laptop)?;
+        let service_info = Self::build_service(endpoint_id, service_port, endpoint_info)?;
 
         Ok(Self {
             daemon: ServiceDaemon::new()?,
@@ -131,7 +132,7 @@ impl MDnsServer {
     fn build_service(
         endpoint_id: [u8; 4],
         service_port: u16,
-        device_type: DeviceType,
+        endpoint_info: &str,
     ) -> Result<ServiceInfo, anyhow::Error> {
         // This `name` is going to be random every time RQS service restarts.
         // If that is not desired, derive host_name, etc. via some other means
@@ -139,7 +140,6 @@ impl MDnsServer {
         let host_name = format!("{name}.local.");
         let device_name = DEVICE_NAME.read().unwrap().clone();
         info!("Broadcasting with: device_name={device_name}, host_name={name}");
-        let endpoint_info = gen_mdns_endpoint_info(device_type as u8, &device_name);
 
         let properties = [("n", endpoint_info)];
         let si = ServiceInfo::new(
@@ -164,7 +164,10 @@ mod tests {
     fn receiver_advertises_a_local_fully_qualified_hostname() {
         let endpoint = *b"TEST";
         let name = gen_mdns_name(endpoint);
-        let service = MDnsServer::build_service(endpoint, 9300, DeviceType::Laptop).unwrap();
+        let info =
+            crate::utils::gen_mdns_endpoint_info(crate::DeviceType::Laptop as u8, "Packet Lab");
+        let service = MDnsServer::build_service(endpoint, 9300, &info).unwrap();
+        assert_eq!(service.get_property_val_str("n"), Some(info.as_str()));
         assert_eq!(service.get_hostname(), format!("{name}.local."));
         assert_eq!(
             service.get_fullname(),
