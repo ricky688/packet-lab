@@ -119,6 +119,81 @@ pub(crate) async fn discover(
     Ok(())
 }
 
+// Nearby regular advertisements publish one read-only GATT slot, including the RFCOMM MAC.
+fn receiving_payload(endpoint: [u8; 4], info: &[u8], address: Address) -> anyhow::Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    if info.len() > 131 {
+        bail!("Endpoint info exceeds Nearby BLE limit");
+    }
+    let mut inner = vec![0x23];
+    inner.extend_from_slice(&SERVICE_HASH);
+    inner.extend_from_slice(&endpoint);
+    inner.push(info.len() as u8);
+    inner.extend_from_slice(info);
+    inner.extend_from_slice(&address.0);
+    inner.extend_from_slice(&[0, 0]); // No UWB address or WebRTC.
+    let mut payload = vec![0x48]; // Medium version 2, socket version 2, regular advertisement.
+    payload.extend_from_slice(&SERVICE_HASH);
+    payload.extend_from_slice(&(inner.len() as u32).to_be_bytes());
+    payload.extend_from_slice(&inner);
+    payload.extend_from_slice(&Sha256::digest(info)[..2]);
+    Ok(payload)
+}
+
+async fn advertise_receiving(
+    adapter: &bluer::Adapter,
+    endpoint: [u8; 4],
+    info: &[u8],
+) -> anyhow::Result<(
+    bluer::gatt::local::ApplicationHandle,
+    bluer::adv::AdvertisementHandle,
+)> {
+    use bluer::gatt::local::{Application, Characteristic, CharacteristicRead, ReqError, Service};
+    use futures::FutureExt;
+    use sha2::{Digest, Sha256};
+    let service = uuid!("0000fef3-0000-1000-8000-00805f9b34fb");
+    let payload = receiving_payload(endpoint, info, adapter.address().await?)?;
+    let mut header = vec![0x41]; // Version 2, no extended advertisement, one GATT slot.
+    // MurmurHash3_x64_128("NearbySharing", seed=0), five hashes, 80-bit bloom filter.
+    header.extend_from_slice(&[0x20, 0, 0, 0x10, 2, 0, 0, 3, 0, 0]);
+    header.extend_from_slice(&Sha256::digest(&payload)[..4]);
+    header.extend_from_slice(&[0, 0]); // No BLE L2CAP listener; use advertised Classic MAC.
+    let app = adapter
+        .serve_gatt_application(Application {
+            services: vec![Service {
+                uuid: service,
+                primary: true,
+                characteristics: vec![Characteristic {
+                    uuid: uuid!("00000000-0000-3000-8000-000000000000"),
+                    read: Some(CharacteristicRead {
+                        read: true,
+                        fun: Box::new(move |request| {
+                            let result = payload
+                                .get(usize::from(request.offset)..)
+                                .map(|bytes| bytes.to_vec())
+                                .ok_or(ReqError::InvalidOffset);
+                            debug!("Nearby receiving GATT slot read: offset={}", request.offset);
+                            async move { result }.boxed()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let advertisement = adapter
+        .advertise(bluer::adv::Advertisement {
+            service_data: [(service, header)].into(),
+            ..Default::default()
+        })
+        .await?;
+    info!("Nearby receiving BLE/GATT advertisement active");
+    Ok((app, advertisement))
+}
+
 pub(crate) async fn run(
     endpoint: [u8; 4],
     name: String,
@@ -133,7 +208,8 @@ pub(crate) async fn run(
     let old_visible = adapter.is_discoverable().await?;
     let old_timeout = adapter.discoverable_timeout().await?;
     let encoded_info = gen_mdns_endpoint_info(DeviceType::Laptop as u8, &name);
-    let alias = device_name(endpoint, &URL_SAFE_NO_PAD.decode(encoded_info)?)?;
+    let endpoint_info = URL_SAFE_NO_PAD.decode(encoded_info)?;
+    let alias = device_name(endpoint, &endpoint_info)?;
     let mut profile = session
         .register_profile(Profile {
             uuid: SERVICE_UUID,
@@ -148,10 +224,17 @@ pub(crate) async fn run(
         adapter.set_discoverable_timeout(0).await?;
         let mut pending: HashMap<Address, oneshot::Sender<anyhow::Result<Transport>>> = HashMap::new();
         let mut attempts = tokio::task::JoinSet::new();
+        let mut receiving = None;
         loop {
             let visible = *visibility.borrow_and_update() != Visibility::Invisible;
             adapter.set_alias(if visible { alias.clone() } else { old_alias.clone() }).await?;
             adapter.set_discoverable(visible).await?;
+            if visible && receiving.is_none() {
+                match advertise_receiving(&adapter, endpoint, &endpoint_info).await {
+                    Ok(handles) => receiving = Some(handles),
+                    Err(error) => warn!("Nearby receiving BLE/GATT advertisement failed: {error}"),
+                }
+            } else if !visible { receiving = None; }
             tokio::select! {
                 _ = ctk.cancelled() => break,
                 changed = visibility.changed() => { if changed.is_err() { break; } },
@@ -216,6 +299,24 @@ pub(crate) async fn connect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receiving_slot_contains_endpoint_info_and_classic_address() {
+        let info = vec![7; 27];
+        let mac = Address([0xe8, 0xc8, 0x29, 0x0b, 0xad, 0x23]);
+        let bytes = receiving_payload(*b"TEST", &info, mac).unwrap();
+        assert_eq!(&bytes[..4], &[0x48, 0xfc, 0x9f, 0x5e]);
+        let length = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        assert_eq!(length, 9 + info.len() + 8);
+        assert_eq!(
+            &bytes[8..17],
+            &[0x23, 0xfc, 0x9f, 0x5e, b'T', b'E', b'S', b'T', 27]
+        );
+        assert_eq!(&bytes[17..44], &info);
+        assert_eq!(&bytes[44..50], &mac.0);
+        assert_eq!(bytes.len(), 8 + length + 2);
+        assert!(receiving_payload(*b"TEST", &[0; 132], mac).is_err());
+    }
+
     #[test]
     fn nearby_name_round_trip_and_untrusted_input() {
         let info = URL_SAFE_NO_PAD
