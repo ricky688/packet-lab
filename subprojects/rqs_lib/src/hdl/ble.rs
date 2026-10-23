@@ -6,7 +6,7 @@ use btleplug::platform::{Adapter, Manager};
 use futures::stream::StreamExt;
 use tokio::sync::broadcast::Sender;
 use tokio_util::sync::CancellationToken;
-use uuid::{uuid, Uuid};
+use uuid::{Uuid, uuid};
 
 const SERVICE_UUID_SHARING: Uuid = uuid!("0000fe2c-0000-1000-8000-00805f9b34fb");
 
@@ -35,15 +35,12 @@ impl BleListener {
         info!("{INNER_NAME}: service starting");
 
         let mut events = self.adapter.events().await?;
-        // Filter on the NearyShare/QuickShare services UUID
-
-        // Not using the ScanFilter here to filter out advertisements
-        // not matching the Nearby Share service UUID, it seems to
-        // exclude Nearby Share advertisements despite its UUID being
-        // in the filter.
-        //
-        // Perhaps broken?
-        self.adapter.start_scan(ScanFilter::default()).await?;
+        // Broad scans flood BlueZ/Blueman with unrelated advertisement property changes.
+        self.adapter
+            .start_scan(ScanFilter {
+                services: vec![SERVICE_UUID_SHARING],
+            })
+            .await?;
 
         let mut last_alert: SystemTime = SystemTime::UNIX_EPOCH;
 
@@ -86,6 +83,7 @@ impl BleListener {
             }
         }
 
+        self.adapter.stop_scan().await?;
         Ok(())
     }
 }
