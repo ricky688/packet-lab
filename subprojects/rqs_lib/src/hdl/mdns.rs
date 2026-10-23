@@ -4,11 +4,11 @@ use std::time::Duration;
 use mdns_sd::{AddrType, ServiceDaemon, ServiceInfo};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
-use tokio::time::{interval_at, Instant};
+use tokio::time::{Instant, interval_at};
 use tokio_util::sync::CancellationToken;
 
-use crate::utils::{gen_mdns_endpoint_info, gen_mdns_name, DeviceType};
 use crate::DEVICE_NAME;
+use crate::utils::{DeviceType, gen_mdns_endpoint_info, gen_mdns_name};
 
 const INNER_NAME: &str = "MDnsServer";
 const TICK_INTERVAL: Duration = Duration::from_secs(60);
@@ -136,6 +136,7 @@ impl MDnsServer {
         // This `name` is going to be random every time RQS service restarts.
         // If that is not desired, derive host_name, etc. via some other means
         let name = gen_mdns_name(endpoint_id);
+        let host_name = format!("{name}.local.");
         let device_name = DEVICE_NAME.read().unwrap().clone();
         info!("Broadcasting with: device_name={device_name}, host_name={name}");
         let endpoint_info = gen_mdns_endpoint_info(device_type as u8, &device_name);
@@ -144,7 +145,7 @@ impl MDnsServer {
         let si = ServiceInfo::new(
             "_FC9F5ED42C8A._tcp.local.",
             &name,
-            &name, // Needs to be ASCII?
+            &host_name,
             "",
             service_port,
             &properties[..],
@@ -152,5 +153,23 @@ impl MDnsServer {
         .enable_addr_auto(AddrType::V4);
 
         Ok(si)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receiver_advertises_a_local_fully_qualified_hostname() {
+        let endpoint = *b"TEST";
+        let name = gen_mdns_name(endpoint);
+        let service = MDnsServer::build_service(endpoint, 9300, DeviceType::Laptop).unwrap();
+        assert_eq!(service.get_hostname(), format!("{name}.local."));
+        assert_eq!(
+            service.get_fullname(),
+            format!("{name}._FC9F5ED42C8A._tcp.local.")
+        );
+        assert_eq!(service.get_port(), 9300);
     }
 }

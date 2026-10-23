@@ -2,6 +2,7 @@
 
 ## Local fixes — 2026-10-23
 
+- Advertise a fully qualified `.local.` hostname in mDNS SRV and address records.
 - Assign distinct nonzero file attachment IDs so Google's receiver can track each attachment's payload.
 - Keep outgoing transfers open until the receiver ends the connection instead of reporting success and sending a disconnect immediately after the last payload chunk.
 - Parse receiver payload acknowledgements and rejection/cancellation controls, and bound finalization waiting to 30 seconds.
