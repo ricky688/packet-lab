@@ -917,7 +917,7 @@ impl InboundRequest {
         let introduction = v1_frame
             .introduction
             .as_ref()
-            .ok_or_else(|| anyhow!("Missing required fields"))?;
+            .ok_or_else(|| anyhow!("Expected introduction after paired-key result; received sharing frame type {}", v1_frame.r#type.unwrap_or_default()))?;
 
         // No need to inform the channel here, we'll do it anyway with files info
         self.update_state(
