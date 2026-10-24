@@ -33,7 +33,10 @@ pub mod manager;
 pub mod transport;
 pub mod utils;
 
-pub use bwu::{P2pUpgradeRequest, P2pUpgrader, set_p2p_upgrader};
+pub use bwu::{
+    P2pHostProvider, P2pUpgradeRequest, P2pUpgrader, WifiDirectOffer, set_p2p_host_provider,
+    set_p2p_upgrader,
+};
 pub use hdl::{EndpointInfo, OutboundPayload, TextPayloadType, TransferState, Visibility};
 pub use manager::SendInfo;
 pub use utils::DeviceType;

@@ -258,6 +258,28 @@ impl WifiP2PController {
     }
 }
 
+pub fn detect_local_p2p_offer(port: u16) -> Option<rqs_lib::WifiDirectOffer> {
+    if let Ok(raw) = std::env::var("RQS_P2P_GO") {
+        let parts: Vec<&str> = raw.splitn(4, ':').collect();
+        if parts.len() == 4 {
+            let ssid = parts[0].trim().to_owned();
+            let password = parts[1].to_owned();
+            let gateway = parts[2].trim().parse().ok()?;
+            let frequency = parts[3].trim().parse().ok()?;
+            if !ssid.is_empty() && !password.is_empty() {
+                return Some(rqs_lib::WifiDirectOffer {
+                    ssid,
+                    password,
+                    gateway,
+                    port,
+                    frequency,
+                });
+            }
+        }
+    }
+    None
+}
+
 pub fn register_with_rqs() {
     rqs_lib::set_p2p_upgrader(std::sync::Arc::new(|req| {
         Box::pin(async move {
@@ -266,6 +288,7 @@ pub fn register_with_rqs() {
             ctrl.connect_for_upgrade(&req).await
         })
     }));
+    rqs_lib::set_p2p_host_provider(std::sync::Arc::new(detect_local_p2p_offer));
 }
 
 #[cfg(test)]

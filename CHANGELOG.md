@@ -5,7 +5,8 @@
 - Implemented automatic physical LAN interface detection (`Connector::is_physical_lan_interface` and `Connector::find_interface_for_peer`) to filter out virtual/VPN/Docker/Bluetooth-bridge interfaces (`vpn`, `tun*`, `tailscale*`, `docker*`, `btnap*`, `virbr*`, `p2p-dev-*`) in `MDnsServer`, `MDnsDiscovery`, and `Connector` without requiring a single-peer `RQS_LAN_ROUTE` override.
 - Implemented sender-side BLE `0xFEF3` (`0000fef3-0000-1000-8000-00805f9b34fb`) extended advertisement parsing and remote GATT slot reading (`parse_receiving_payload`, `resolve_ble_fef3_device`, `read_fef3_gatt_slots`) in `rqs_lib::bluetooth` so unpaired Android phones can be discovered and resolved to their Classic RFCOMM MAC address.
 - Wired `WifiP2PController::connect_for_upgrade` (`src/p2p.rs`) into `rqs_lib::bwu` (`Upgrade::handle`) via `rqs_lib::set_p2p_upgrader` to execute end-to-end `Medium::WifiDirect` and `Medium::WifiHotspot` bandwidth upgrades with automatic fallback to encrypted Bluetooth on failure.
-- Added unit tests covering virtual/VPN interface filtering, BLE `0xFEF3` slot round-trip decoding, and `WifiDirect`/`WifiHotspot` BWU handover (35 `rqs_lib` tests + 4 `packet-lab` tests passing).
+- Implemented Receiver-Initiated `Medium::WifiDirect` offer (`WifiDirectOffer`, `set_p2p_host_provider`, `Upgrade::offer`) and automatic AP-isolation fallback (`Medium::WifiLan` `UpgradeFailure` -> automatic `Medium::WifiDirect` `UpgradePathAvailable` offer -> encrypted Bluetooth fallback).
+- Added unit tests covering virtual/VPN interface filtering, BLE `0xFEF3` slot round-trip decoding, `WifiDirect`/`WifiHotspot` BWU handover, and Receiver-Initiated `Medium::WifiDirect` offer with AP-isolation fallback (36 `rqs_lib` tests + 4 `packet-lab` tests passing).
 
 ## NetworkManager Wi-Fi P2P integration — 2026-10-24
 

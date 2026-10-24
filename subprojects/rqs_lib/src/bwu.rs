@@ -126,10 +126,32 @@ pub(crate) fn parse_p2p_upgrade_request(
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WifiDirectOffer {
+    pub ssid: String,
+    pub password: String,
+    pub gateway: Ipv4Addr,
+    pub port: u16,
+    pub frequency: i32,
+}
+
+pub type P2pHostProvider = Arc<dyn Fn(u16) -> Option<WifiDirectOffer> + Send + Sync>;
+
+static P2P_HOST_PROVIDER: std::sync::RwLock<Option<P2pHostProvider>> =
+    std::sync::RwLock::new(None);
+
+pub fn set_p2p_host_provider(provider: P2pHostProvider) {
+    if let Ok(mut guard) = P2P_HOST_PROVIDER.write() {
+        *guard = Some(provider);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Context {
     pub endpoint: String,
     pub address: Option<SocketAddrV4>,
+    pub wifi_direct: Option<WifiDirectOffer>,
+    pub port: u16,
     pending: Pending,
 }
 
@@ -161,8 +183,19 @@ impl Context {
         Self {
             endpoint: String::from_utf8_lossy(&endpoint).into(),
             address,
+            wifi_direct: None,
+            port,
             pending: Arc::default(),
         }
+    }
+
+    pub fn resolve_wifi_direct(&self) -> Option<WifiDirectOffer> {
+        self.wifi_direct.clone().or_else(|| {
+            P2P_HOST_PROVIDER
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().and_then(|provider| provider(self.port)))
+        })
     }
 
     pub async fn route_introduction(
@@ -218,6 +251,9 @@ pub(crate) struct Upgrade {
     pub remote: Option<String>,
     pub bluetooth: bool,
     pub lan_failed: bool,
+    pub lan_attempted: bool,
+    pub direct_failed: bool,
+    pub direct_offered: Option<WifiDirectOffer>,
     next: Option<Transport>,
     waiting: Option<oneshot::Receiver<Transport>>,
     pub last_sent: bool,
@@ -267,41 +303,103 @@ impl Upgrade {
             return Ok(None);
         }
         let context = self.context.as_ref().context("Missing upgrade context")?;
-        let Some(address) = context.address else {
-            return Ok(None);
-        };
-        let remote = self
-            .remote
-            .as_deref()
-            .context("Missing remote endpoint ID")?;
-        let (tx, rx) = oneshot::channel();
-        let mut pending = context.pending.lock().unwrap();
-        if pending.contains_key(remote) {
-            bail!("Endpoint already upgrading");
+
+        // 1. Primary receiver offer: local Wi-Fi LAN if available and not yet failed/attempted.
+        if !self.lan_attempted && !self.lan_failed && self.direct_offered.is_none() {
+            if let Some(address) = context.address {
+                let remote = self
+                    .remote
+                    .as_deref()
+                    .context("Missing remote endpoint ID")?
+                    .to_owned();
+                let (tx, rx) = oneshot::channel();
+                let mut pending = context.pending.lock().unwrap();
+                if pending.contains_key(&remote) {
+                    bail!("Endpoint already upgrading");
+                }
+                pending.insert(remote, tx);
+                drop(pending);
+                self.waiting = Some(rx);
+                self.deadline = Some(tokio::time::Instant::now() + DEADLINE);
+                let mut frame = event(EventType::UpgradePathAvailable);
+                frame
+                    .v1
+                    .as_mut()
+                    .unwrap()
+                    .bandwidth_upgrade_negotiation
+                    .as_mut()
+                    .unwrap()
+                    .upgrade_path_info = Some(bwu::UpgradePathInfo {
+                    medium: Some(Medium::WifiLan.into()),
+                    wifi_lan_socket: Some(WifiLanSocket {
+                        ip_address: Some(address.ip().octets().to_vec()),
+                        wifi_port: Some(i32::from(address.port())),
+                    }),
+                    supports_disabling_encryption: Some(false),
+                    supports_client_introduction_ack: Some(true),
+                    ..Default::default()
+                });
+                info!("Bluetooth -> Wi-Fi: offering local LAN endpoint {address}");
+                return Ok(Some(frame));
+            }
         }
-        pending.insert(remote.to_owned(), tx);
-        self.waiting = Some(rx);
-        self.deadline = Some(tokio::time::Instant::now() + DEADLINE);
-        let mut frame = event(EventType::UpgradePathAvailable);
-        frame
-            .v1
-            .as_mut()
-            .unwrap()
-            .bandwidth_upgrade_negotiation
-            .as_mut()
-            .unwrap()
-            .upgrade_path_info = Some(bwu::UpgradePathInfo {
-            medium: Some(Medium::WifiLan.into()),
-            wifi_lan_socket: Some(WifiLanSocket {
-                ip_address: Some(address.ip().octets().to_vec()),
-                wifi_port: Some(i32::from(address.port())),
-            }),
-            supports_disabling_encryption: Some(false),
-            supports_client_introduction_ack: Some(true),
-            ..Default::default()
-        });
-        info!("Bluetooth -> Wi-Fi: offering local LAN endpoint {address}");
-        Ok(Some(frame))
+
+        // 2. Receiver-initiated Wi-Fi Direct GO offer when LAN is unavailable or rejected (e.g. AP isolation).
+        if !self.direct_failed && self.direct_offered.is_none() {
+            if let Some(direct) = context.resolve_wifi_direct() {
+                if !direct.gateway.is_private()
+                    || direct.ssid.is_empty()
+                    || direct.ssid.len() > 32
+                    || direct.password.is_empty()
+                    || direct.port == 0
+                {
+                    bail!("Invalid local Wi-Fi Direct offer configuration");
+                }
+                let remote = self
+                    .remote
+                    .as_deref()
+                    .context("Missing remote endpoint ID")?
+                    .to_owned();
+                let (tx, rx) = oneshot::channel();
+                let mut pending = context.pending.lock().unwrap();
+                if pending.contains_key(&remote) {
+                    bail!("Endpoint already upgrading");
+                }
+                pending.insert(remote, tx);
+                drop(pending);
+                self.waiting = Some(rx);
+                self.deadline = Some(tokio::time::Instant::now() + DEADLINE);
+                self.direct_offered = Some(direct.clone());
+                let mut frame = event(EventType::UpgradePathAvailable);
+                frame
+                    .v1
+                    .as_mut()
+                    .unwrap()
+                    .bandwidth_upgrade_negotiation
+                    .as_mut()
+                    .unwrap()
+                    .upgrade_path_info = Some(bwu::UpgradePathInfo {
+                    medium: Some(Medium::WifiDirect.into()),
+                    wifi_direct_credentials: Some(bwu::upgrade_path_info::WifiDirectCredentials {
+                        ssid: Some(direct.ssid.clone()),
+                        password: Some(direct.password.clone()),
+                        port: Some(i32::from(direct.port)),
+                        frequency: Some(direct.frequency),
+                        gateway: Some(direct.gateway.to_string()),
+                    }),
+                    supports_disabling_encryption: Some(false),
+                    supports_client_introduction_ack: Some(true),
+                    ..Default::default()
+                });
+                info!(
+                    "Bluetooth -> Wi-Fi Direct: offering local GO {} ({}:{}, {} MHz)",
+                    direct.ssid, direct.gateway, direct.port, direct.frequency
+                );
+                return Ok(Some(frame));
+            }
+        }
+
+        Ok(None)
     }
 
     pub async fn handle(
@@ -464,33 +562,74 @@ impl Upgrade {
                     .upgrade_path_info
                     .as_ref()
                     .context("Missing failed upgrade path")?;
-                let address = lan_address(
-                    path.wifi_lan_socket
-                        .as_ref()
-                        .context("Missing failed Wi-Fi socket")?,
-                )?;
-                let context = self
-                    .context
-                    .as_ref()
-                    .context("Missing failed upgrade context")?;
-                if path.medium() != Medium::WifiLan
-                    || self.waiting.is_none()
-                    || self.last_sent
-                    || self.last_received
-                    || context.address != Some(address)
-                {
+                if self.waiting.is_none() || self.last_sent || self.last_received {
                     bail!("Unsolicited or mismatched upgrade failure");
                 }
-                context
-                    .pending
-                    .lock()
-                    .unwrap()
-                    .remove(self.remote.as_deref().unwrap_or(""));
-                self.waiting = None;
-                self.deadline = None;
-                self.lan_failed = true;
-                warn!("Peer rejected LAN upgrade; retaining encrypted Bluetooth transport");
-                Ok(Action::Send(Vec::new()))
+                match path.medium() {
+                    Medium::WifiLan => {
+                        let address = lan_address(
+                            path.wifi_lan_socket
+                                .as_ref()
+                                .context("Missing failed Wi-Fi socket")?,
+                        )?;
+                        let context = self
+                            .context
+                            .as_ref()
+                            .context("Missing failed upgrade context")?;
+                        if self.direct_offered.is_some() || context.address != Some(address) {
+                            bail!("Unsolicited or mismatched upgrade failure");
+                        }
+                        context
+                            .pending
+                            .lock()
+                            .unwrap()
+                            .remove(self.remote.as_deref().unwrap_or(""));
+                        self.waiting = None;
+                        self.deadline = None;
+                        self.lan_attempted = true;
+                        if let Some(direct_offer_frame) = self.offer()? {
+                            info!(
+                                "Peer rejected LAN upgrade (e.g. AP isolation); falling back to receiver-initiated Wi-Fi Direct offer"
+                            );
+                            return Ok(Action::Send(vec![direct_offer_frame]));
+                        }
+                        self.lan_failed = true;
+                        warn!("Peer rejected LAN upgrade; retaining encrypted Bluetooth transport");
+                        Ok(Action::Send(Vec::new()))
+                    }
+                    Medium::WifiDirect => {
+                        let req = parse_p2p_upgrade_request(path)?;
+                        let offered = self
+                            .direct_offered
+                            .as_ref()
+                            .context("Unsolicited Wi-Fi Direct upgrade failure")?;
+                        if offered.ssid != req.ssid
+                            || offered.gateway != req.gateway
+                            || offered.port != req.port
+                        {
+                            bail!("Mismatched Wi-Fi Direct upgrade failure");
+                        }
+                        let context = self
+                            .context
+                            .as_ref()
+                            .context("Missing failed upgrade context")?;
+                        context
+                            .pending
+                            .lock()
+                            .unwrap()
+                            .remove(self.remote.as_deref().unwrap_or(""));
+                        self.waiting = None;
+                        self.deadline = None;
+                        self.direct_offered = None;
+                        self.direct_failed = true;
+                        self.lan_failed = true;
+                        warn!(
+                            "Peer rejected Wi-Fi Direct upgrade; retaining encrypted Bluetooth transport"
+                        );
+                        Ok(Action::Send(Vec::new()))
+                    }
+                    _ => bail!("Unsolicited or mismatched upgrade failure"),
+                }
             }
             _ => bail!("Out-of-order upgrade event {:?}", packet.event_type()),
         }
@@ -880,5 +1019,138 @@ mod tests {
             assert_eq!(captured.ssid, "DIRECT-xy-Phone");
             assert_eq!(captured.port, port);
         }
+    }
+
+    #[tokio::test]
+    async fn receiver_initiated_wifi_direct_offer_and_ap_isolation_fallback() {
+        // 1. AP-isolation scenario: LAN is offered first, rejected by peer, and automatically falls back to offering Wi-Fi Direct GO
+        let mut context = Context::new(*b"RCVR", 9300);
+        context.address = Some("10.0.0.10:9300".parse().unwrap());
+        context.wifi_direct = Some(WifiDirectOffer {
+            ssid: "DIRECT-PL-PacketLab".into(),
+            password: "p2ppassword".into(),
+            gateway: Ipv4Addr::new(192, 168, 49, 1),
+            port: 9300,
+            frequency: 5180,
+        });
+
+        let mut upgrade = Upgrade::default();
+        upgrade.context = Some(context.clone());
+        upgrade.remote = Some("PHON".into());
+        upgrade.bluetooth = true;
+
+        // Initial offer is WifiLan
+        let lan_offer = upgrade.offer().unwrap().unwrap();
+        let lan_info = lan_offer
+            .v1
+            .as_ref()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_ref()
+            .unwrap()
+            .upgrade_path_info
+            .as_ref()
+            .unwrap();
+        assert_eq!(lan_info.medium(), Medium::WifiLan);
+
+        // Peer rejects WifiLan due to AP isolation -> Upgrade::handle automatically sends WifiDirect offer
+        let mut lan_rejected = lan_offer.v1.unwrap().bandwidth_upgrade_negotiation.unwrap();
+        lan_rejected.event_type = Some(EventType::UpgradeFailure.into());
+        let Action::Send(fallback_frames) = upgrade.handle(&lan_rejected).await.unwrap() else {
+            panic!("expected automatic Wi-Fi Direct fallback offer");
+        };
+        assert_eq!(fallback_frames.len(), 1);
+        assert!(!upgrade.lan_failed && upgrade.waiting.is_some());
+        let direct_neg = fallback_frames[0]
+            .v1
+            .as_ref()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_ref()
+            .unwrap();
+        assert_eq!(direct_neg.event_type(), EventType::UpgradePathAvailable);
+        let direct_path = direct_neg.upgrade_path_info.as_ref().unwrap();
+        assert_eq!(direct_path.medium(), Medium::WifiDirect);
+        let direct_creds = direct_path.wifi_direct_credentials.as_ref().unwrap();
+        assert_eq!(direct_creds.ssid.as_deref(), Some("DIRECT-PL-PacketLab"));
+        assert_eq!(direct_creds.password.as_deref(), Some("p2ppassword"));
+        assert_eq!(direct_creds.gateway.as_deref(), Some("192.168.49.1"));
+        assert_eq!(direct_creds.port, Some(9300));
+        assert_eq!(direct_creds.frequency, Some(5180));
+
+        // Peer connects to Receiver's Wi-Fi Direct GO and completes ClientIntroduction + channel switch
+        let (p2p_local, p2p_peer) = tokio::io::duplex(1024);
+        let mut p2p_local = Transport::new(p2p_local);
+        let mut p2p_peer = Transport::new(p2p_peer);
+        let mut intro = event(EventType::ClientIntroduction);
+        intro
+            .v1
+            .as_mut()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_mut()
+            .unwrap()
+            .client_introduction = Some(bwu::ClientIntroduction {
+            endpoint_id: Some("PHON".into()),
+            supports_disabling_encryption: Some(false),
+        });
+        assert!(
+            context
+                .route_introduction(&intro, &mut p2p_local)
+                .await
+                .unwrap()
+        );
+        let ack = read_plain(&mut p2p_peer).await.unwrap();
+        assert_eq!(
+            ack.v1
+                .unwrap()
+                .bandwidth_upgrade_negotiation
+                .unwrap()
+                .event_type(),
+            EventType::ClientIntroductionAck
+        );
+
+        let last = event(EventType::LastWriteToPriorChannel)
+            .v1
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .unwrap();
+        let Action::Send(drain_frames) = upgrade.handle(&last).await.unwrap() else {
+            panic!("must drain old stream");
+        };
+        assert_eq!(drain_frames.len(), 2);
+        let safe = event(EventType::SafeToClosePriorChannel)
+            .v1
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .unwrap();
+        assert!(matches!(
+            upgrade.handle(&safe).await.unwrap(),
+            Action::Switch
+        ));
+
+        // 2. Direct-only scenario (no Wi-Fi LAN connected) where peer also rejects Wi-Fi Direct -> cleanly retains Bluetooth
+        let mut context_no_lan = Context::new(*b"RCV2", 9300);
+        context_no_lan.address = None;
+        context_no_lan.wifi_direct = context.wifi_direct.clone();
+        let mut upgrade2 = Upgrade::default();
+        upgrade2.context = Some(context_no_lan.clone());
+        upgrade2.remote = Some("PHN2".into());
+        upgrade2.bluetooth = true;
+
+        let direct_offer = upgrade2.offer().unwrap().unwrap();
+        let mut direct_rejected = direct_offer
+            .v1
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .unwrap();
+        direct_rejected.event_type = Some(EventType::UpgradeFailure.into());
+        let Action::Send(empty) = upgrade2.handle(&direct_rejected).await.unwrap() else {
+            panic!("expected empty send on final fallback");
+        };
+        assert!(empty.is_empty());
+        assert!(upgrade2.direct_failed && upgrade2.lan_failed);
+        assert!(upgrade2.waiting.is_none() && upgrade2.deadline.is_none());
+        assert!(context_no_lan.pending.lock().unwrap().is_empty());
     }
 }

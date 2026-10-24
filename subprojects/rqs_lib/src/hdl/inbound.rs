@@ -846,6 +846,10 @@ impl InboundRequest {
                         location_nearby_connections::BandwidthUpgradeRetryFrame {
                             is_request: Some(false),
                             supported_medium: vec![
+                                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiHotspot
+                                    .into(),
+                                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiDirect
+                                    .into(),
                                 location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiLan
                                     .into(),
                             ],
@@ -855,6 +859,15 @@ impl InboundRequest {
                 }),
             };
             self.encrypt_and_send(&response).await?;
+            if self.upgrade.bluetooth
+                && !self.upgrade.complete
+                && self.upgrade.context.is_some()
+                && self.upgrade.remote.is_some()
+            {
+                if let Some(offer) = self.upgrade.offer()? {
+                    self.encrypt_and_send(&offer).await?;
+                }
+            }
         }
         Ok(())
     }
