@@ -43,6 +43,7 @@ message V1Frame {
     KEEP_ALIVE = 5;
     DISCONNECTION = 6;
     PAIRED_KEY_ENCRYPTION = 7;
+    BANDWIDTH_UPGRADE_RETRY = 12;
   }
   optional FrameType type = 1;
 
@@ -54,6 +55,7 @@ message V1Frame {
   optional KeepAliveFrame keep_alive = 6;
   optional DisconnectionFrame disconnection = 7;
   optional PairedKeyEncryptionFrame paired_key_encryption = 8;
+  optional BandwidthUpgradeRetryFrame bandwidth_upgrade_retry = 13;
 }
 
 message ConnectionRequestFrame {
@@ -400,4 +402,23 @@ message OsInfo {
   }
 
   optional OsType type = 1;
+}
+
+message BandwidthUpgradeRetryFrame {
+  enum Medium {
+    UNKNOWN_MEDIUM = 0;
+    BLUETOOTH = 2;
+    WIFI_HOTSPOT = 3;
+    BLE = 4;
+    WIFI_LAN = 5;
+    WIFI_AWARE = 6;
+    NFC = 7;
+    WIFI_DIRECT = 8;
+    WEB_RTC = 9;
+    BLE_L2CAP = 10;
+    USB = 11;
+  }
+
+  repeated Medium supported_medium = 1;
+  optional bool is_request = 2;
 }

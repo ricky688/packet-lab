@@ -227,6 +227,12 @@ impl Upgrade {
                     .as_ref()
                     .context("Missing upgrade path")?;
                 if path.medium() != Medium::WifiLan || path.supports_disabling_encryption() {
+                    warn!(
+                        "Rejecting unsupported upgrade path: medium={:?}, disabling_encryption={:?}, path={:?}",
+                        path.medium(),
+                        path.supports_disabling_encryption(),
+                        path
+                    );
                     let mut failure = event(EventType::UpgradeFailure);
                     failure
                         .v1

@@ -813,11 +813,49 @@ impl InboundRequest {
                 trace!("Sending keepalive");
                 self.send_keepalive(true).await?;
             }
+            location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry => {
+                if let Some(retry) = &v1_frame.bandwidth_upgrade_retry {
+                    self.process_bandwidth_upgrade_retry(retry).await?;
+                }
+            }
             _ => {
                 error!("Unhandled offline frame encrypted: {:?}", offline);
             }
         }
 
+        Ok(())
+    }
+
+    pub(crate) async fn process_bandwidth_upgrade_retry(
+        &mut self,
+        retry: &location_nearby_connections::BandwidthUpgradeRetryFrame,
+    ) -> Result<(), anyhow::Error> {
+        info!(
+            "Received BandwidthUpgradeRetry: is_request={:?}, supported_medium={:?}",
+            retry.is_request, retry.supported_medium
+        );
+        if retry.is_request() {
+            let response = location_nearby_connections::OfflineFrame {
+                version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
+                v1: Some(location_nearby_connections::V1Frame {
+                    r#type: Some(
+                        location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry
+                            .into(),
+                    ),
+                    bandwidth_upgrade_retry: Some(
+                        location_nearby_connections::BandwidthUpgradeRetryFrame {
+                            is_request: Some(false),
+                            supported_medium: vec![
+                                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiLan
+                                    .into(),
+                            ],
+                        },
+                    ),
+                    ..Default::default()
+                }),
+            };
+            self.encrypt_and_send(&response).await?;
+        }
         Ok(())
     }
 
@@ -1548,6 +1586,34 @@ mod tests {
         assert!(!request.deferred_consent);
         assert_eq!(request.state.state, TransferState::ReceivingFiles);
         assert!(!request.upgrade.complete);
+        assert!(peer.read_u32().await.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn bandwidth_upgrade_retry_request_replies_supported_mediums() {
+        let (socket, mut peer) = tokio::io::duplex(2048);
+        let (events, _) = tokio::sync::broadcast::channel(10);
+        let mut request = InboundRequest::new(socket, "test-phone".into(), events);
+        request.state.encrypt_key = Some(vec![1; 32]);
+        request.state.send_hmac_key = Some(vec![2; 32]);
+        request.state.state = TransferState::WaitingForUserConsent;
+        request.upgrade.bluetooth = true;
+
+        let retry = location_nearby_connections::BandwidthUpgradeRetryFrame {
+            is_request: Some(true),
+            supported_medium: vec![
+                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiHotspot
+                    .into(),
+                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiDirect
+                    .into(),
+                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiLan.into(),
+            ],
+        };
+
+        request
+            .process_bandwidth_upgrade_retry(&retry)
+            .await
+            .unwrap();
         assert!(peer.read_u32().await.unwrap() > 0);
     }
 }
