@@ -2,6 +2,8 @@
 
 ## PAN receiving experiment — 2026-10-24
 
+- Verified phone-to-Linux encrypted RFCOMM receiving of a 1 MiB synthetic file (`packet-lab-bt-fallback-1MiB (1).bin`) with matching byte count (1,048,576 bytes) and SHA-256 (`fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83`).
+- Verified that this transfer succeeded purely over encrypted Bluetooth RFCOMM (~30.6 KiB/s payload transfer rate across 34.3 seconds, 44.6 seconds total from consent); explicitly distinguishing this from a Wi-Fi LAN or PAN handover.
 - Use Bluetooth-only Nearby discovery and transfer when the explicitly selected interface belongs to Bluetooth; avoid announcing PAN as Wi-Fi LAN.
 
 - Explicitly request an automatic RFCOMM listener for the custom NearbySharing UUID.
