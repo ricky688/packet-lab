@@ -62,6 +62,18 @@ impl MDnsServer {
                 daemon.enable_interface(IfKind::Name(interface.to_owned()))?;
                 info!("{INNER_NAME}: advertising only on selected local interface {interface}");
             }
+        } else {
+            let eligible = connector.eligible_lan_interfaces();
+            if !eligible.is_empty() {
+                daemon.disable_interface(IfKind::All)?;
+                for iface in &eligible {
+                    daemon.enable_interface(IfKind::Name(iface.clone()))?;
+                }
+                info!(
+                    "{INNER_NAME}: auto-selected physical LAN interfaces {:?} (excluding VPN/virtual)",
+                    eligible
+                );
+            }
         }
 
         Ok(Self {

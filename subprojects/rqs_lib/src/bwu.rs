@@ -27,6 +27,105 @@ use tokio::{
 const DEADLINE: Duration = Duration::from_secs(10);
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Transport>>>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct P2pUpgradeRequest {
+    pub medium: Medium,
+    pub ssid: String,
+    pub password: String,
+    pub gateway: Ipv4Addr,
+    pub port: u16,
+    pub frequency: Option<i32>,
+}
+
+pub type P2pUpgrader = Arc<
+    dyn Fn(
+            P2pUpgradeRequest,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>
+        + Send
+        + Sync,
+>;
+
+static P2P_UPGRADER: std::sync::RwLock<Option<P2pUpgrader>> = std::sync::RwLock::new(None);
+
+pub fn set_p2p_upgrader(upgrader: P2pUpgrader) {
+    if let Ok(mut guard) = P2P_UPGRADER.write() {
+        *guard = Some(upgrader);
+    }
+}
+
+pub(crate) fn parse_p2p_upgrade_request(
+    path: &bwu::UpgradePathInfo,
+) -> anyhow::Result<P2pUpgradeRequest> {
+    match path.medium() {
+        Medium::WifiDirect => {
+            let creds = path
+                .wifi_direct_credentials
+                .as_ref()
+                .context("Missing Wi-Fi Direct credentials")?;
+            let ssid = creds.ssid.as_deref().unwrap_or("").trim().to_owned();
+            let password = creds.password.as_deref().unwrap_or("").to_owned();
+            if ssid.is_empty() || ssid.len() > 32 || password.is_empty() {
+                bail!("Invalid Wi-Fi Direct SSID or password");
+            }
+            let port = creds.port.unwrap_or(0);
+            if port <= 0 || port > 65535 {
+                bail!("Invalid Wi-Fi Direct port");
+            }
+            let gw_str = creds.gateway.as_deref().unwrap_or("0.0.0.0").trim();
+            let gateway = if gw_str.is_empty() || gw_str == "0.0.0.0" {
+                Ipv4Addr::new(192, 168, 49, 1)
+            } else {
+                gw_str.parse::<Ipv4Addr>().context("Invalid Wi-Fi Direct gateway")?
+            };
+            if !gateway.is_private() {
+                bail!("Non-private Wi-Fi Direct gateway");
+            }
+            Ok(P2pUpgradeRequest {
+                medium: Medium::WifiDirect,
+                ssid,
+                password,
+                gateway,
+                port: port as u16,
+                frequency: creds.frequency,
+            })
+        }
+        Medium::WifiHotspot => {
+            let creds = path
+                .wifi_hotspot_credentials
+                .as_ref()
+                .context("Missing Wi-Fi Hotspot credentials")?;
+            let ssid = creds.ssid.as_deref().unwrap_or("").trim().to_owned();
+            let password = creds.password.as_deref().unwrap_or("").to_owned();
+            if ssid.is_empty() || ssid.len() > 32 || password.is_empty() {
+                bail!("Invalid Wi-Fi Hotspot SSID or password");
+            }
+            let port = creds.port.unwrap_or(0);
+            if port <= 0 || port > 65535 {
+                bail!("Invalid Wi-Fi Hotspot port");
+            }
+            let gw_str = creds.gateway.as_deref().unwrap_or("0.0.0.0").trim();
+            let gateway = if gw_str.is_empty() || gw_str == "0.0.0.0" {
+                Ipv4Addr::new(192, 168, 43, 1)
+            } else {
+                gw_str.parse::<Ipv4Addr>().context("Invalid Wi-Fi Hotspot gateway")?
+            };
+            if !gateway.is_private() {
+                bail!("Non-private Wi-Fi Hotspot gateway");
+            }
+            Ok(P2pUpgradeRequest {
+                medium: Medium::WifiHotspot,
+                ssid,
+                password,
+                gateway,
+                port: port as u16,
+                frequency: creds.frequency,
+            })
+        }
+        other => bail!("Unsupported P2P medium {:?}", other),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Context {
     pub endpoint: String,
@@ -48,11 +147,7 @@ impl Context {
             .and_then(|interfaces| {
                 interfaces.into_iter().find_map(|i| {
                     let eligible = interface.as_ref().map_or_else(
-                        || {
-                            i.name.starts_with("wl")
-                                || i.name.starts_with("en")
-                                || i.name.starts_with("eth")
-                        },
+                        || Connector::is_physical_lan_interface(&i.name),
                         |name| *name == i.name,
                     );
                     match i.ip() {
@@ -226,32 +321,10 @@ impl Upgrade {
                     .upgrade_path_info
                     .as_ref()
                     .context("Missing upgrade path")?;
-                if path.medium() != Medium::WifiLan || path.supports_disabling_encryption() {
-                    match path.medium() {
-                        Medium::WifiDirect => {
-                            info!(
-                                "Received Wi-Fi Direct upgrade offer: ssid={:?}, port={:?}, freq={:?}, gateway={:?}",
-                                path.wifi_direct_credentials.as_ref().and_then(|c| c.ssid.as_deref()),
-                                path.wifi_direct_credentials.as_ref().and_then(|c| c.port),
-                                path.wifi_direct_credentials.as_ref().and_then(|c| c.frequency),
-                                path.wifi_direct_credentials.as_ref().and_then(|c| c.gateway.as_deref()),
-                            );
-                        }
-                        Medium::WifiHotspot => {
-                            info!(
-                                "Received Wi-Fi Hotspot upgrade offer: ssid={:?}, port={:?}, gateway={:?}",
-                                path.wifi_hotspot_credentials.as_ref().and_then(|c| c.ssid.as_deref()),
-                                path.wifi_hotspot_credentials.as_ref().and_then(|c| c.port),
-                                path.wifi_hotspot_credentials.as_ref().and_then(|c| c.gateway.as_deref()),
-                            );
-                        }
-                        _ => {}
-                    }
+                if path.supports_disabling_encryption() {
                     warn!(
-                        "Rejecting unsupported upgrade path: medium={:?}, disabling_encryption={:?}, path={:?}",
-                        path.medium(),
-                        path.supports_disabling_encryption(),
-                        path
+                        "Rejecting unencrypted upgrade path: medium={:?}",
+                        path.medium()
                     );
                     let mut failure = event(EventType::UpgradeFailure);
                     failure
@@ -264,11 +337,53 @@ impl Upgrade {
                         .upgrade_path_info = Some(path.clone());
                     return Ok(Action::Send(vec![failure]));
                 }
-                let address = lan_address(
-                    path.wifi_lan_socket
-                        .as_ref()
-                        .context("Missing Wi-Fi LAN socket")?,
-                )?;
+                let address = match path.medium() {
+                    Medium::WifiLan => lan_address(
+                        path.wifi_lan_socket
+                            .as_ref()
+                            .context("Missing Wi-Fi LAN socket")?,
+                    )?,
+                    Medium::WifiDirect | Medium::WifiHotspot => {
+                        let req = match parse_p2p_upgrade_request(path) {
+                            Ok(req) => req,
+                            Err(error) => {
+                                warn!(
+                                    "Invalid {:?} upgrade credentials: {error:#}; retaining encrypted Bluetooth transport",
+                                    path.medium()
+                                );
+                                return Ok(self.retain_bluetooth(path));
+                            }
+                        };
+                        info!(
+                            "Received {:?} upgrade offer: ssid={}, gateway={}, port={}, freq={:?}",
+                            req.medium, req.ssid, req.gateway, req.port, req.frequency
+                        );
+                        let upgrader = P2P_UPGRADER.read().ok().and_then(|g| g.clone());
+                        if let Some(upgrader) = upgrader {
+                            if let Err(error) = upgrader(req.clone()).await {
+                                warn!("Wi-Fi P2P link preparation returned warning: {error:#}");
+                            }
+                        }
+                        SocketAddrV4::new(req.gateway, req.port)
+                    }
+                    _ => {
+                        warn!(
+                            "Rejecting unsupported upgrade medium: medium={:?}, path={:?}",
+                            path.medium(),
+                            path
+                        );
+                        let mut failure = event(EventType::UpgradeFailure);
+                        failure
+                            .v1
+                            .as_mut()
+                            .unwrap()
+                            .bandwidth_upgrade_negotiation
+                            .as_mut()
+                            .unwrap()
+                            .upgrade_path_info = Some(path.clone());
+                        return Ok(Action::Send(vec![failure]));
+                    }
+                };
                 let connection = Connector::from_env()?.connect(&address.to_string()).await;
                 let mut socket = match connection {
                     Ok(socket) => Transport::new(socket),
@@ -641,5 +756,129 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn wifi_direct_and_hotspot_credentials_validation_and_handover() {
+        use bwu::upgrade_path_info::{WifiDirectCredentials, WifiHotspotCredentials};
+
+        // 1. Default 0.0.0.0 gateway resolves to 192.168.49.1 for WifiDirect and 192.168.43.1 for WifiHotspot
+        let direct_path = bwu::UpgradePathInfo {
+            medium: Some(Medium::WifiDirect.into()),
+            wifi_direct_credentials: Some(WifiDirectCredentials {
+                ssid: Some("DIRECT-xy-Android_1234".into()),
+                password: Some("secretpass".into()),
+                port: Some(9300),
+                frequency: Some(5180),
+                gateway: Some("0.0.0.0".into()),
+            }),
+            supports_disabling_encryption: Some(false),
+            supports_client_introduction_ack: Some(true),
+            ..Default::default()
+        };
+        let req = parse_p2p_upgrade_request(&direct_path).unwrap();
+        assert_eq!(req.medium, Medium::WifiDirect);
+        assert_eq!(req.ssid, "DIRECT-xy-Android_1234");
+        assert_eq!(req.gateway, Ipv4Addr::new(192, 168, 49, 1));
+        assert_eq!(req.port, 9300);
+        assert_eq!(req.frequency, Some(5180));
+
+        let hotspot_path = bwu::UpgradePathInfo {
+            medium: Some(Medium::WifiHotspot.into()),
+            wifi_hotspot_credentials: Some(WifiHotspotCredentials {
+                ssid: Some("AndroidShare_5678".into()),
+                password: Some("hotspotpass".into()),
+                port: Some(9301),
+                gateway: None,
+                frequency: Some(2412),
+            }),
+            supports_disabling_encryption: Some(false),
+            ..Default::default()
+        };
+        let h_req = parse_p2p_upgrade_request(&hotspot_path).unwrap();
+        assert_eq!(h_req.medium, Medium::WifiHotspot);
+        assert_eq!(h_req.gateway, Ipv4Addr::new(192, 168, 43, 1));
+        assert_eq!(h_req.port, 9301);
+
+        // 2. Rejects public gateway or empty credentials
+        let bad_path = bwu::UpgradePathInfo {
+            medium: Some(Medium::WifiDirect.into()),
+            wifi_direct_credentials: Some(WifiDirectCredentials {
+                ssid: Some("DIRECT-xy".into()),
+                password: Some("secret".into()),
+                port: Some(9300),
+                frequency: None,
+                gateway: Some("8.8.8.8".into()),
+            }),
+            ..Default::default()
+        };
+        assert!(parse_p2p_upgrade_request(&bad_path).is_err());
+
+        // 3. End-to-end P2P upgrader invocation and handover over local private IP listener
+        let recorded = Arc::new(Mutex::new(None));
+        let recorded_clone = recorded.clone();
+        set_p2p_upgrader(Arc::new(move |r| {
+            let recorded_clone = recorded_clone.clone();
+            Box::pin(async move {
+                *recorded_clone.lock().unwrap() = Some(r);
+                Ok(())
+            })
+        }));
+
+        if let Some(local_private_ip) = get_if_addrs::get_if_addrs().ok().and_then(|ifs| {
+            ifs.into_iter().find_map(|i| match i.ip() {
+                std::net::IpAddr::V4(ip) if ip.is_private() => Some(ip),
+                _ => None,
+            })
+        }) {
+            let listener =
+                tokio::net::TcpListener::bind(SocketAddrV4::new(local_private_ip, 0))
+                    .await
+                    .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let peer_task = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = Transport::new(stream);
+                let intro = read_plain(&mut stream).await.unwrap();
+                let intro_frame = intro
+                    .v1
+                    .unwrap()
+                    .bandwidth_upgrade_negotiation
+                    .unwrap()
+                    .client_introduction
+                    .unwrap();
+                assert_eq!(intro_frame.endpoint_id(), "TEST");
+                let ack = event(EventType::ClientIntroductionAck);
+                write_plain(&mut stream, &ack).await.unwrap();
+            });
+
+            let mut upgrade = Upgrade::default();
+            upgrade.context = Some(Context::new(*b"TEST", 9300));
+            upgrade.bluetooth = true;
+            let frame = wire::BandwidthUpgradeNegotiationFrame {
+                event_type: Some(EventType::UpgradePathAvailable.into()),
+                upgrade_path_info: Some(bwu::UpgradePathInfo {
+                    medium: Some(Medium::WifiDirect.into()),
+                    wifi_direct_credentials: Some(WifiDirectCredentials {
+                        ssid: Some("DIRECT-xy-Phone".into()),
+                        password: Some("pass1234".into()),
+                        port: Some(i32::from(port)),
+                        frequency: Some(5180),
+                        gateway: Some(local_private_ip.to_string()),
+                    }),
+                    supports_disabling_encryption: Some(false),
+                    supports_client_introduction_ack: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let action = upgrade.handle(&frame).await.unwrap();
+            assert!(matches!(action, Action::Send(ref f) if f.len() == 1));
+            assert!(upgrade.next.is_some() && upgrade.last_sent);
+            peer_task.await.unwrap();
+            let captured = recorded.lock().unwrap().clone().unwrap();
+            assert_eq!(captured.ssid, "DIRECT-xy-Phone");
+            assert_eq!(captured.port, port);
+        }
     }
 }

@@ -18,6 +18,7 @@ use uuid::{Uuid, uuid};
 
 // Nearby's Java nameUUIDFromBytes("NearbySharing"), without a namespace prefix.
 const SERVICE_UUID: Uuid = uuid!("a82efa21-ae5c-3dde-9bbc-f16da7b16c5a");
+const FEF3_SERVICE_UUID: Uuid = uuid!("0000fef3-0000-1000-8000-00805f9b34fb");
 const SERVICE_HASH: [u8; 3] = [0xfc, 0x9f, 0x5e];
 
 pub(crate) struct Connect {
@@ -51,6 +52,102 @@ fn parse_name(name: &str) -> anyhow::Result<([u8; 4], DeviceType, String)> {
     Ok((data[1..5].try_into()?, kind, name))
 }
 
+fn parse_receiving_payload(
+    bytes: &[u8],
+    fallback_address: Address,
+) -> anyhow::Result<([u8; 4], DeviceType, String, Address)> {
+    // Support both wrapped BLE v2 GATT slot payload (0x4x + SERVICE_HASH + len[4] + inner)
+    // and direct BLE extended advertisement inner payload (0x23 + SERVICE_HASH + endpoint[4] + info_len + info + mac[6]).
+    let inner = if bytes.len() >= 8 && (bytes[0] & 0xe0) == 0x40 && bytes[1..4] == SERVICE_HASH {
+        let len = u32::from_be_bytes(bytes[4..8].try_into()?) as usize;
+        let end = 8usize.checked_add(len).context("Invalid BLE slot length")?;
+        if end > bytes.len() {
+            bail!("Truncated BLE GATT slot wrapper");
+        }
+        &bytes[8..end]
+    } else {
+        bytes
+    };
+
+    if inner.len() < 9 || (inner[0] & 0xe0) != 0x20 || inner[1..4] != SERVICE_HASH {
+        bail!("Not a Nearby Sharing BLE receiving payload");
+    }
+    let endpoint: [u8; 4] = inner[4..8].try_into()?;
+    let info_len = usize::from(inner[8]);
+    let info_end = 9 + info_len;
+    if info_len > 131 || info_end > inner.len() {
+        bail!("Truncated BLE endpoint info");
+    }
+    let (kind, name) = parse_mdns_endpoint_info(&URL_SAFE_NO_PAD.encode(&inner[9..info_end]))?;
+    let classic_address = if inner.len() >= info_end + 6 && inner[info_end..info_end + 6] != [0; 6]
+    {
+        Address(inner[info_end..info_end + 6].try_into()?)
+    } else {
+        fallback_address
+    };
+    Ok((endpoint, kind, name, classic_address))
+}
+
+async fn resolve_ble_fef3_device(
+    device: &bluer::Device,
+    address: Address,
+) -> anyhow::Result<Option<([u8; 4], DeviceType, String, Address)>> {
+    let service_data = device.service_data().await?.unwrap_or_default();
+    let has_fef3_uuid = device
+        .uuids()
+        .await?
+        .is_some_and(|ids| ids.contains(&FEF3_SERVICE_UUID));
+    let Some(data) = service_data.get(&FEF3_SERVICE_UUID) else {
+        if !has_fef3_uuid {
+            return Ok(None);
+        }
+        return read_fef3_gatt_slots(device, address).await;
+    };
+
+    // 1. Try direct parsing (BLE 5.0 Extended Advertisement carries the full payload in ServiceData).
+    if let Ok(parsed) = parse_receiving_payload(data, address) {
+        return Ok(Some(parsed));
+    }
+
+    // 2. Regular BLE advertisement header (Version 2 Bloom-filter + slot hashes): read GATT slots on 0xFEF3.
+    if data.len() >= 11 && (data[0] & 0xe0) == 0x40 {
+        return read_fef3_gatt_slots(device, address).await;
+    }
+
+    Ok(None)
+}
+
+async fn read_fef3_gatt_slots(
+    device: &bluer::Device,
+    address: Address,
+) -> anyhow::Result<Option<([u8; 4], DeviceType, String, Address)>> {
+    let attempt = async {
+        if !device.is_connected().await.unwrap_or(false) {
+            let _ = device.connect().await;
+        }
+        for service in device.services().await? {
+            if service.uuid().await.ok() != Some(FEF3_SERVICE_UUID) {
+                continue;
+            }
+            for ch in service.characteristics().await? {
+                if let Ok(bytes) = ch.read().await {
+                    if let Ok(parsed) = parse_receiving_payload(&bytes, address) {
+                        return Ok::<_, anyhow::Error>(Some(parsed));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    };
+    match tokio::time::timeout(Duration::from_secs(4), attempt).await {
+        Ok(res) => res,
+        Err(_) => {
+            debug!("BLE FEF3 GATT slot read timed out for {address}");
+            Ok(None)
+        }
+    }
+}
+
 pub(crate) async fn discover(
     sender: broadcast::Sender<EndpointInfo>,
     ctk: CancellationToken,
@@ -69,43 +166,74 @@ pub(crate) async fn discover(
             AdapterEvent::DeviceAdded(address) => {
                 let result: anyhow::Result<()> = async {
                     let device = adapter.device(address)?;
-                    if let Some(display) = device.name().await? {
-                        let parsed = parse_name(&display).ok();
-                        // Some Android builds retain their normal Bluetooth name but expose Nearby's SDP UUID.
-                        let nearby_service = device.class().await?.is_some()
-                            && device
-                                .uuids()
-                                .await?
-                                .is_some_and(|ids| ids.contains(&SERVICE_UUID));
-                        if parsed.is_some() || nearby_service {
-                            let (endpoint, kind, name) = parsed
-                                .map(|(id, kind, name)| {
-                                    (String::from_utf8_lossy(&id).into_owned(), kind, name)
-                                })
-                                .unwrap_or_else(|| (String::new(), DeviceType::Unknown, display));
-                            let id = format!("bluetooth://{address}");
-                            let info = EndpointInfo {
-                                fullname: endpoint,
-                                id: id.clone(),
-                                name: Some(name),
-                                ip: Some(id),
-                                port: None,
-                                rtype: Some(kind),
-                                present: Some(true),
-                            };
-                            if known
-                                .get(&address)
-                                .and_then(|p: &EndpointInfo| p.name.as_ref())
-                                != info.name.as_ref()
-                            {
-                                info!(
-                                    "Bluetooth Nearby endpoint {} ({address})",
-                                    info.name.as_deref().unwrap_or("Unknown")
-                                );
-                                let _ = sender.send(info.clone());
-                            }
-                            known.insert(address, info);
+                    let display = device.name().await?;
+                    let parsed = display.as_deref().and_then(|d| parse_name(d).ok());
+                    // Some Android builds retain their normal Bluetooth name but expose Nearby's SDP UUID.
+                    let nearby_service = device.class().await?.is_some()
+                        && device
+                            .uuids()
+                            .await?
+                            .is_some_and(|ids| ids.contains(&SERVICE_UUID));
+                    if parsed.is_some() || nearby_service {
+                        let (endpoint, kind, name) = parsed
+                            .map(|(id, kind, name)| {
+                                (String::from_utf8_lossy(&id).into_owned(), kind, name)
+                            })
+                            .unwrap_or_else(|| {
+                                (
+                                    String::new(),
+                                    DeviceType::Unknown,
+                                    display.unwrap_or_else(|| address.to_string()),
+                                )
+                            });
+                        let id = format!("bluetooth://{address}");
+                        let info = EndpointInfo {
+                            fullname: endpoint,
+                            id: id.clone(),
+                            name: Some(name),
+                            ip: Some(id),
+                            port: None,
+                            rtype: Some(kind),
+                            present: Some(true),
+                        };
+                        if known
+                            .get(&address)
+                            .and_then(|p: &EndpointInfo| p.name.as_ref())
+                            != info.name.as_ref()
+                        {
+                            info!(
+                                "Bluetooth Nearby endpoint {} ({address})",
+                                info.name.as_deref().unwrap_or("Unknown")
+                            );
+                            let _ = sender.send(info.clone());
                         }
+                        known.insert(address, info);
+                    } else if let Some((id_bytes, kind, name, classic_mac)) =
+                        resolve_ble_fef3_device(&device, address).await?
+                    {
+                        let endpoint = String::from_utf8_lossy(&id_bytes).into_owned();
+                        let id = format!("bluetooth://{classic_mac}");
+                        let info = EndpointInfo {
+                            fullname: endpoint,
+                            id: id.clone(),
+                            name: Some(name),
+                            ip: Some(id),
+                            port: None,
+                            rtype: Some(kind),
+                            present: Some(true),
+                        };
+                        if known
+                            .get(&address)
+                            .and_then(|p: &EndpointInfo| p.name.as_ref())
+                            != info.name.as_ref()
+                        {
+                            info!(
+                                "BLE FEF3 Nearby endpoint {} (BLE {address} -> Classic {classic_mac})",
+                                info.name.as_deref().unwrap_or("Unknown")
+                            );
+                            let _ = sender.send(info.clone());
+                        }
+                        known.insert(address, info);
                     }
                     Ok(())
                 }
@@ -350,5 +478,47 @@ mod tests {
         raw[5] ^= 1;
         assert!(parse_name(&URL_SAFE_NO_PAD.encode(raw)).is_err());
         assert!(device_name(*b"TEST", &[0; 132]).is_err());
+    }
+
+    #[test]
+    fn ble_fef3_slot_and_extended_payload_round_trip() {
+        let info = URL_SAFE_NO_PAD
+            .decode(gen_mdns_endpoint_info(
+                DeviceType::Phone as u8,
+                "Friend's Pixel 9",
+            ))
+            .unwrap();
+        let classic_mac = Address([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+        let ble_random_mac = Address([0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54]);
+
+        // 1. Wrapped GATT slot payload
+        let slot_bytes = receiving_payload(*b"PX9A", &info, classic_mac).unwrap();
+        let (id, kind, name, resolved_mac) =
+            parse_receiving_payload(&slot_bytes, ble_random_mac).unwrap();
+        assert_eq!(id, *b"PX9A");
+        assert_eq!(kind, DeviceType::Phone);
+        assert_eq!(name, "Friend's Pixel 9");
+        assert_eq!(resolved_mac, classic_mac);
+
+        // 2. Direct BLE extended advertisement inner payload
+        let inner_len = u32::from_be_bytes(slot_bytes[4..8].try_into().unwrap()) as usize;
+        let inner_bytes = &slot_bytes[8..8 + inner_len];
+        let (id2, kind2, name2, resolved_mac2) =
+            parse_receiving_payload(inner_bytes, ble_random_mac).unwrap();
+        assert_eq!(id2, *b"PX9A");
+        assert_eq!(kind2, DeviceType::Phone);
+        assert_eq!(name2, "Friend's Pixel 9");
+        assert_eq!(resolved_mac2, classic_mac);
+
+        // 3. Fallback to BLE address if Classic MAC is all-zero
+        let zero_mac_bytes = receiving_payload(*b"PX9B", &info, Address([0; 6])).unwrap();
+        let (_, _, _, fallback_resolved) =
+            parse_receiving_payload(&zero_mac_bytes, ble_random_mac).unwrap();
+        assert_eq!(fallback_resolved, ble_random_mac);
+
+        // 4. Rejects malformed payloads
+        for invalid in [vec![], vec![0x48, 0xfc, 0x9f, 0x5e, 0, 0, 1, 0], vec![0x23; 10]] {
+            assert!(parse_receiving_payload(&invalid, ble_random_mac).is_err());
+        }
     }
 }

@@ -219,6 +219,53 @@ impl WifiP2PController {
         tracing::info!(active_connection = %active_conn_path.as_str(), "Deactivated P2P connection");
         Ok(())
     }
+
+    pub async fn connect_for_upgrade(
+        &self,
+        req: &rqs_lib::P2pUpgradeRequest,
+    ) -> anyhow::Result<()> {
+        self.start_find().await?;
+        let ssid_hint = req
+            .ssid
+            .strip_prefix("DIRECT-")
+            .and_then(|rest| rest.split_once('-').map(|(_, tail)| tail))
+            .unwrap_or(&req.ssid);
+        for _ in 0..6 {
+            if let Ok(peers) = self.list_peers().await {
+                if let Some(peer) = peers
+                    .iter()
+                    .find(|p| {
+                        !ssid_hint.is_empty()
+                            && (p.name.contains(ssid_hint) || req.ssid.contains(&p.name))
+                    })
+                    .or_else(|| peers.iter().max_by_key(|p| p.strength))
+                {
+                    tracing::info!(
+                        peer_name = %peer.name,
+                        peer_mac = %peer.hw_address,
+                        ssid = %req.ssid,
+                        "Activating NetworkManager Device.WifiP2P peer for Quick Share upgrade"
+                    );
+                    let _ = self.connect_peer(&peer.path, &peer.hw_address).await?;
+                    let _ = self.stop_find().await;
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        }
+        let _ = self.stop_find().await;
+        anyhow::bail!("No matching Wi-Fi P2P peer found for SSID {}", req.ssid)
+    }
+}
+
+pub fn register_with_rqs() {
+    rqs_lib::set_p2p_upgrader(std::sync::Arc::new(|req| {
+        Box::pin(async move {
+            let conn = Connection::system().await?;
+            let ctrl = WifiP2PController::new(conn).await?;
+            ctrl.connect_for_upgrade(&req).await
+        })
+    }));
 }
 
 #[cfg(test)]

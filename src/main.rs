@@ -72,6 +72,7 @@ fn main() -> glib::ExitCode {
     gettextrs::textdomain(GETTEXT_PACKAGE).expect("Unable to switch to the text domain");
 
     glib::set_application_name(&gettext("Packet Lab"));
+    p2p::register_with_rqs();
 
     for (res_env, res_path) in [
         ("RESOURCE_FILE", RESOURCES_FILE),

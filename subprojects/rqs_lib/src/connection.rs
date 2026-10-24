@@ -56,15 +56,86 @@ impl Connector {
         self.route.as_ref().map(|route| route.interface.as_str())
     }
 
+    pub(crate) fn is_bluetooth_interface(interface: &str) -> bool {
+        std::fs::canonicalize(format!("/sys/class/net/{interface}/device"))
+            .ok()
+            .is_some_and(|path| {
+                path.components()
+                    .any(|part| part.as_os_str() == "bluetooth")
+            })
+    }
+
+    pub(crate) fn is_physical_lan_interface(name: &str) -> bool {
+        if name.is_empty()
+            || name.starts_with("p2p-dev-")
+            || name.starts_with("vpn")
+            || name.starts_with("tun")
+            || name.starts_with("tap")
+            || name.starts_with("wg")
+            || name.starts_with("tailscale")
+            || name.starts_with("docker")
+            || name.starts_with("br-")
+            || name.starts_with("veth")
+            || name.starts_with("virbr")
+            || name.starts_with("btnap")
+            || name.starts_with("bnep")
+            || name.starts_with("ap")
+            || name == "lo"
+        {
+            return false;
+        }
+        let is_lan_prefix = name.starts_with("wl")
+            || name.starts_with("en")
+            || name.starts_with("eth")
+            || name.starts_with("p2p-");
+        is_lan_prefix && !Self::is_bluetooth_interface(name)
+    }
+
+    pub(crate) fn eligible_lan_interfaces(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if let Ok(interfaces) = get_if_addrs::get_if_addrs() {
+            for iface in interfaces {
+                if let get_if_addrs::IfAddr::V4(v4) = iface.addr {
+                    if v4.ip.is_private()
+                        && Self::is_physical_lan_interface(&iface.name)
+                        && !names.contains(&iface.name)
+                    {
+                        names.push(iface.name);
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    pub(crate) fn find_interface_for_peer(
+        peer: Ipv4Addr,
+        interfaces: &[get_if_addrs::Interface],
+    ) -> Option<String> {
+        if !peer.is_private() {
+            return None;
+        }
+        let peer_u32 = u32::from(peer);
+        for iface in interfaces {
+            if !Self::is_physical_lan_interface(&iface.name) {
+                continue;
+            }
+            if let get_if_addrs::IfAddr::V4(v4) = &iface.addr {
+                if v4.ip.is_private() {
+                    let mask = u32::from(v4.netmask);
+                    let if_u32 = u32::from(v4.ip);
+                    if mask != 0 && (peer_u32 & mask) == (if_u32 & mask) {
+                        return Some(iface.name.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn is_bluetooth(&self) -> bool {
-        self.interface().is_some_and(|interface| {
-            std::fs::canonicalize(format!("/sys/class/net/{interface}/device"))
-                .ok()
-                .is_some_and(|path| {
-                    path.components()
-                        .any(|part| part.as_os_str() == "bluetooth")
-                })
-        })
+        self.interface()
+            .is_some_and(Self::is_bluetooth_interface)
     }
 
     pub(crate) fn from_env() -> io::Result<Self> {
@@ -105,6 +176,28 @@ impl Connector {
                         route.interface
                     );
                     return Ok(stream);
+                }
+            } else if let Ok(SocketAddr::V4(peer)) = addr.parse() {
+                if let Ok(interfaces) = get_if_addrs::get_if_addrs() {
+                    if let Some(iface) = Self::find_interface_for_peer(*peer.ip(), &interfaces) {
+                        if let Ok(socket) = TcpSocket::new_v4() {
+                            #[cfg(target_os = "linux")]
+                            let bound = socket.bind_device(Some(iface.as_bytes())).is_ok();
+                            #[cfg(not(target_os = "linux"))]
+                            let bound = false;
+                            if bound {
+                                if let Ok(stream) = socket.connect(SocketAddr::V4(peer)).await {
+                                    debug!(
+                                        "Auto-bound local sharing TCP: {} -> {} via {}",
+                                        stream.local_addr()?,
+                                        peer,
+                                        iface
+                                    );
+                                    return Ok(stream);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             TcpStream::connect(addr).await
@@ -188,5 +281,93 @@ mod tests {
         connector.connect(&addr).await.unwrap();
         connector.route.as_mut().unwrap().interface = "no-such-device".into();
         assert!(connector.connect(&addr).await.is_err());
+    }
+
+    #[test]
+    fn filters_virtual_and_vpn_interfaces_and_matches_lan_subnet() {
+        for physical in ["wlo1", "wlan0", "eth0", "enp3s0", "p2p-wlo1-0"] {
+            assert!(
+                Connector::is_physical_lan_interface(physical),
+                "expected {physical} to be recognized as physical LAN"
+            );
+        }
+        for virt in [
+            "lo",
+            "vpn",
+            "tun0",
+            "tailscale0",
+            "docker0",
+            "btnap0",
+            "bnep0",
+            "virbr0",
+            "veth1234",
+            "br-abcdef",
+            "p2p-dev-wlo1",
+            "ap0",
+        ] {
+            assert!(
+                !Connector::is_physical_lan_interface(virt),
+                "expected {virt} to be filtered out as virtual/non-LAN"
+            );
+        }
+
+        let fake_ifs = vec![
+            get_if_addrs::Interface {
+                name: "vpn".into(),
+                addr: get_if_addrs::IfAddr::V4(get_if_addrs::Ifv4Addr {
+                    ip: Ipv4Addr::new(10, 14, 0, 2),
+                    netmask: Ipv4Addr::new(255, 255, 0, 0),
+                    broadcast: None,
+                }),
+            },
+            get_if_addrs::Interface {
+                name: "docker0".into(),
+                addr: get_if_addrs::IfAddr::V4(get_if_addrs::Ifv4Addr {
+                    ip: Ipv4Addr::new(172, 17, 0, 1),
+                    netmask: Ipv4Addr::new(255, 255, 0, 0),
+                    broadcast: None,
+                }),
+            },
+            get_if_addrs::Interface {
+                name: "wlo1".into(),
+                addr: get_if_addrs::IfAddr::V4(get_if_addrs::Ifv4Addr {
+                    ip: Ipv4Addr::new(192, 168, 0, 143),
+                    netmask: Ipv4Addr::new(255, 255, 255, 0),
+                    broadcast: Some(Ipv4Addr::new(192, 168, 0, 255)),
+                }),
+            },
+            get_if_addrs::Interface {
+                name: "p2p-wlo1-0".into(),
+                addr: get_if_addrs::IfAddr::V4(get_if_addrs::Ifv4Addr {
+                    ip: Ipv4Addr::new(192, 168, 49, 2),
+                    netmask: Ipv4Addr::new(255, 255, 255, 0),
+                    broadcast: Some(Ipv4Addr::new(192, 168, 49, 255)),
+                }),
+            },
+        ];
+
+        // Any random phone on 192.168.0.x auto-routes to wlo1
+        assert_eq!(
+            Connector::find_interface_for_peer(Ipv4Addr::new(192, 168, 0, 55), &fake_ifs),
+            Some("wlo1".into())
+        );
+        assert_eq!(
+            Connector::find_interface_for_peer(Ipv4Addr::new(192, 168, 0, 201), &fake_ifs),
+            Some("wlo1".into())
+        );
+        // Any phone on Wi-Fi Direct 192.168.49.x auto-routes to p2p-wlo1-0
+        assert_eq!(
+            Connector::find_interface_for_peer(Ipv4Addr::new(192, 168, 49, 1), &fake_ifs),
+            Some("p2p-wlo1-0".into())
+        );
+        // VPN and Docker subnets are never bound as physical LAN interfaces
+        assert_eq!(
+            Connector::find_interface_for_peer(Ipv4Addr::new(10, 14, 0, 99), &fake_ifs),
+            None
+        );
+        assert_eq!(
+            Connector::find_interface_for_peer(Ipv4Addr::new(172, 17, 0, 5), &fake_ifs),
+            None
+        );
     }
 }

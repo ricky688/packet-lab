@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent};
 use std::net::SocketAddrV4;
 
 use crate::connection::Connector;
@@ -31,6 +31,20 @@ impl MDnsDiscovery {
     pub fn new(sender: broadcast::Sender<EndpointInfo>) -> Result<Self, anyhow::Error> {
         let connector = Connector::from_env()?;
         let daemon = ServiceDaemon::new()?;
+        if let Some(interface) = connector.interface() {
+            if !connector.is_bluetooth() {
+                daemon.disable_interface(IfKind::All)?;
+                daemon.enable_interface(IfKind::Name(interface.to_owned()))?;
+            }
+        } else {
+            let eligible = connector.eligible_lan_interfaces();
+            if !eligible.is_empty() {
+                daemon.disable_interface(IfKind::All)?;
+                for iface in &eligible {
+                    daemon.enable_interface(IfKind::Name(iface.clone()))?;
+                }
+            }
+        }
 
         Ok(Self {
             connector,
