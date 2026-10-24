@@ -3,6 +3,7 @@
 ## PAN receiving experiment — 2026-10-24
 
 - Explicitly request an automatic RFCOMM listener for the custom NearbySharing UUID.
+- Resume accepted incoming transfers after a rejected LAN upgrade instead of leaving consent deferred.
 
 - Restrict receiver mDNS advertisements to the explicitly selected local interface.
 - Retain encrypted Bluetooth after a peer rejects our pending LAN upgrade, with matching-path validation and pending-session cleanup.

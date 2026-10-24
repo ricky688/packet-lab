@@ -83,6 +83,10 @@ impl InboundRequest {
     }
 
     pub async fn handle(&mut self) -> Result<(), anyhow::Error> {
+        if self.upgrade.lan_failed && std::mem::take(&mut self.deferred_consent) {
+            self.accept_transfer().await?;
+            return Ok(());
+        }
         // Buffer for the 4-byte length
         let mut length_buf = [0u8; 4];
 
@@ -1492,5 +1496,29 @@ impl InboundRequest {
         // some spare time to process channel's message. Otherwise it
         // get spammed by new requests. Currently set to 10 micro secs.
         tokio::time::sleep(SANITY_DURATION).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn rejected_upgrade_resumes_already_accepted_incoming_transfer() {
+        let (socket, mut peer) = tokio::io::duplex(2048);
+        let (events, _) = tokio::sync::broadcast::channel(10);
+        let mut request = InboundRequest::new(socket, "test-phone".into(), events);
+        request.state.encrypt_key = Some(vec![1; 32]);
+        request.state.send_hmac_key = Some(vec![2; 32]);
+        request.state.state = TransferState::WaitingForUserConsent;
+        request.upgrade.bluetooth = true;
+        request.upgrade.lan_failed = true;
+        request.deferred_consent = true;
+        request.handle().await.unwrap();
+        assert!(!request.deferred_consent);
+        assert_eq!(request.state.state, TransferState::ReceivingFiles);
+        assert!(!request.upgrade.complete);
+        assert!(peer.read_u32().await.unwrap() > 0);
     }
 }
