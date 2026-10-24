@@ -220,6 +220,7 @@ pub(crate) async fn run(
         .register_profile(Profile {
             uuid: SERVICE_UUID,
             name: Some("NearbySharing".into()),
+            channel: Some(0), // Custom BlueZ UUIDs need an explicit auto-allocated RFCOMM listener.
             require_authentication: Some(false),
             require_authorization: Some(false),
             ..Default::default()
