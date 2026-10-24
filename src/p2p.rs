@@ -18,6 +18,19 @@ pub const NM_WIFI_P2P_PEER_INTERFACE: &str = "org.freedesktop.NetworkManager.Wif
 pub trait NetworkManager {
     fn get_device_by_ip_iface(&self, iface: &str) -> Result<OwnedObjectPath>;
     fn get_devices(&self) -> Result<Vec<OwnedObjectPath>>;
+    fn activate_connection(
+        &self,
+        connection: OwnedObjectPath,
+        device: OwnedObjectPath,
+        specific_object: OwnedObjectPath,
+    ) -> Result<OwnedObjectPath>;
+    fn add_and_activate_connection(
+        &self,
+        connection: HashMap<&str, HashMap<&str, Value<'_>>>,
+        device: OwnedObjectPath,
+        specific_object: OwnedObjectPath,
+    ) -> Result<(OwnedObjectPath, OwnedObjectPath)>;
+    fn deactivate_connection(&self, active_connection: OwnedObjectPath) -> Result<()>;
 }
 
 #[zbus::proxy(
@@ -33,6 +46,12 @@ pub trait WifiP2P {
 
     #[zbus(property)]
     fn hw_address(&self) -> Result<String>;
+
+    #[zbus(signal)]
+    fn peer_added(&self, peer: OwnedObjectPath) -> Result<()>;
+
+    #[zbus(signal)]
+    fn peer_removed(&self, peer: OwnedObjectPath) -> Result<()>;
 }
 
 #[zbus::proxy(
@@ -160,6 +179,46 @@ impl WifiP2PController {
 
         Ok(result)
     }
+
+    pub async fn connect_peer(
+        &self,
+        peer_path: &OwnedObjectPath,
+        peer_hw_address: &str,
+    ) -> anyhow::Result<(OwnedObjectPath, OwnedObjectPath)> {
+        let nm_proxy = NetworkManagerProxy::new(&self.conn).await?;
+        let mut conn_settings: HashMap<&str, HashMap<&str, Value<'_>>> = HashMap::new();
+
+        let mut connection_map = HashMap::new();
+        connection_map.insert("type", Value::from("wifi-p2p"));
+        connection_map.insert("id", Value::from("PacketLab-P2P"));
+        connection_map.insert("autoconnect", Value::from(false));
+        conn_settings.insert("connection", connection_map);
+
+        let mut p2p_map = HashMap::new();
+        p2p_map.insert("peer", Value::from(peer_hw_address));
+        conn_settings.insert("wifi-p2p", p2p_map);
+
+        let (con_path, active_con_path) = nm_proxy
+            .add_and_activate_connection(
+                conn_settings,
+                self.device_path.clone(),
+                peer_path.clone(),
+            )
+            .await?;
+        tracing::info!(
+            connection = %con_path.as_str(),
+            active_connection = %active_con_path.as_str(),
+            "Initiated Wi-Fi P2P connection to peer"
+        );
+        Ok((con_path, active_con_path))
+    }
+
+    pub async fn disconnect(&self, active_conn_path: &OwnedObjectPath) -> anyhow::Result<()> {
+        let nm_proxy = NetworkManagerProxy::new(&self.conn).await?;
+        nm_proxy.deactivate_connection(active_conn_path.clone()).await?;
+        tracing::info!(active_connection = %active_conn_path.as_str(), "Deactivated P2P connection");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +233,10 @@ mod tests {
                     println!("Found P2P device: {:?}", ctrl.device_path());
                     assert!(!ctrl.device_path().as_str().is_empty());
                     assert!(ctrl.device_path().as_str().starts_with("/org/freedesktop/NetworkManager/Devices/"));
+
+                    if let Ok(peers) = ctrl.list_peers().await {
+                        println!("Current P2P peers: {peers:?}");
+                    }
                 }
                 Err(e) => {
                     println!("No P2P device or error: {e}");
