@@ -150,6 +150,16 @@ impl OutboundRequest {
 
     pub async fn handle(&mut self) -> Result<(), anyhow::Error> {
         if self.upgrade.lan_failed {
+            if self.upgrade.context.is_some()
+                && !self.upgrade.direct_failed
+                && self.upgrade.waiting.is_none()
+                && !self.upgrade.last_sent
+            {
+                if let Ok(Some(offer)) = self.upgrade.offer() {
+                    info!("LAN upgrade failed; sender falling back to Wi-Fi Direct offer");
+                    self.encrypt_and_send(&offer).await?;
+                }
+            }
             if let Some(consent) = self.deferred_consent.take() {
                 return self.process_consent(&consent).await;
             }
@@ -307,7 +317,11 @@ impl OutboundRequest {
                         }
                         .serialize(),
                     ),
-                    mediums: vec![Medium::WifiLan.into()],
+                    mediums: vec![
+                        Medium::WifiLan.into(),
+                        Medium::WifiDirect.into(),
+                        Medium::WifiHotspot.into(),
+                    ],
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -672,11 +686,61 @@ impl OutboundRequest {
                 trace!("Sending keepalive");
                 self.send_keepalive(true).await?;
             }
+            location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry => {
+                if let Some(retry) = &v1_frame.bandwidth_upgrade_retry {
+                    self.process_bandwidth_upgrade_retry(retry).await?;
+                }
+            }
             _ => {
                 error!("Unhandled offline frame encrypted: {:?}", offline);
             }
         }
 
+        Ok(())
+    }
+
+    pub(crate) async fn process_bandwidth_upgrade_retry(
+        &mut self,
+        retry: &location_nearby_connections::BandwidthUpgradeRetryFrame,
+    ) -> Result<(), anyhow::Error> {
+        info!(
+            "Received BandwidthUpgradeRetry: is_request={:?}, supported_medium={:?}",
+            retry.is_request, retry.supported_medium
+        );
+        if retry.is_request() {
+            let response = location_nearby_connections::OfflineFrame {
+                version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
+                v1: Some(location_nearby_connections::V1Frame {
+                    r#type: Some(
+                        location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry
+                            .into(),
+                    ),
+                    bandwidth_upgrade_retry: Some(
+                        location_nearby_connections::BandwidthUpgradeRetryFrame {
+                            is_request: Some(false),
+                            supported_medium: vec![
+                                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiHotspot
+                                    .into(),
+                                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiDirect
+                                    .into(),
+                                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiLan.into(),
+                            ],
+                        },
+                    ),
+                    ..Default::default()
+                }),
+            };
+            self.encrypt_and_send(&response).await?;
+
+            if self.upgrade.bluetooth && !self.upgrade.complete {
+                if self.upgrade.context.is_some() {
+                    if let Some(offer) = self.upgrade.offer()? {
+                        info!("Bluetooth -> Wi-Fi: sender offering upgrade path after retry request");
+                        self.encrypt_and_send(&offer).await?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -934,6 +998,12 @@ impl OutboundRequest {
                                 .is_some_and(|m| m.total_bytes >= 1_000_000)))
                 {
                     self.deferred_consent = Some(v1_frame.clone());
+                    if !self.upgrade.last_sent && self.upgrade.waiting.is_none() {
+                        if let Some(offer) = self.upgrade.offer()? {
+                            info!("Bluetooth -> Wi-Fi: sender proactively proposing bandwidth upgrade offer after consent");
+                            self.encrypt_and_send(&offer).await?;
+                        }
+                    }
                     return Ok(());
                 }
                 if self.upgrade.bluetooth && !self.upgrade.complete {
@@ -1968,5 +2038,74 @@ mod tests {
                     .contains_key(&file.payload_id())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn connection_request_advertises_p2p_and_hotspot_mediums() {
+        let (mut sender, mut peer) = text_sender().await;
+        sender.send_connection_request().await.unwrap();
+        let len = peer.read_u32().await.unwrap();
+        let mut buf = vec![0u8; len as usize];
+        peer.read_exact(&mut buf).await.unwrap();
+        let offline = OfflineFrame::decode(buf.as_slice()).unwrap();
+        let conn_req = offline
+            .v1
+            .unwrap()
+            .connection_request
+            .unwrap();
+        let mediums = conn_req.mediums;
+        assert!(mediums.contains(&(Medium::WifiLan as i32)));
+        assert!(mediums.contains(&(Medium::WifiDirect as i32)));
+        assert!(mediums.contains(&(Medium::WifiHotspot as i32)));
+    }
+
+    #[tokio::test]
+    async fn outbound_bandwidth_upgrade_retry_request_replies_supported_mediums() {
+        let (mut sender, mut peer) = text_sender().await;
+        sender.state.encrypt_key = Some(vec![1; 32]);
+        sender.state.send_hmac_key = Some(vec![2; 32]);
+        sender.upgrade.bluetooth = true;
+
+        let retry = location_nearby_connections::BandwidthUpgradeRetryFrame {
+            is_request: Some(true),
+            supported_medium: vec![
+                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiHotspot
+                    .into(),
+                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiDirect
+                    .into(),
+                location_nearby_connections::bandwidth_upgrade_retry_frame::Medium::WifiLan.into(),
+            ],
+        };
+
+        sender
+            .process_bandwidth_upgrade_retry(&retry)
+            .await
+            .unwrap();
+        assert!(peer.read_u32().await.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn sender_proactively_offers_wifi_direct_on_consent_when_bluetooth() {
+        let (mut sender, mut peer) = text_sender().await;
+        sender.state.encrypt_key = Some(vec![1; 32]);
+        sender.state.send_hmac_key = Some(vec![2; 32]);
+        sender.upgrade.bluetooth = true;
+        let mut ctx = crate::bwu::Context::new(*b"LOCL", 9300);
+        ctx.address = None;
+        ctx.wifi_direct = Some(crate::bwu::WifiDirectOffer {
+            ssid: "DIRECT-test-sender".into(),
+            password: "testpassword123".into(),
+            gateway: std::net::Ipv4Addr::new(192, 168, 49, 1),
+            port: 9300,
+            frequency: 5180,
+        });
+        sender.upgrade.context = Some(ctx);
+        sender.state.transfer_metadata.as_mut().unwrap().total_bytes = 10 * 1024 * 1024;
+
+        sender.process_consent(&consent()).await.unwrap();
+        assert!(sender.deferred_consent.is_some());
+        assert!(sender.upgrade.direct_offered.is_some());
+        // Verify peer received encrypted offer frame
+        assert!(peer.read_u32().await.unwrap() > 0);
     }
 }

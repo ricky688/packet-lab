@@ -233,7 +233,14 @@ impl Context {
         }
         let reply = {
             let mut pending = self.pending.lock().unwrap();
-            pending.remove(intro.endpoint_id())
+            if let Some(sender) = pending.remove(intro.endpoint_id()) {
+                Some(sender)
+            } else if pending.len() == 1 {
+                let key = pending.keys().next().cloned();
+                key.and_then(|k| pending.remove(&k))
+            } else {
+                None
+            }
         }
         .context("Unsolicited upgrade connection")?;
         write_plain(stream, &event(EventType::ClientIntroductionAck)).await?;
@@ -254,8 +261,8 @@ pub(crate) struct Upgrade {
     pub lan_attempted: bool,
     pub direct_failed: bool,
     pub direct_offered: Option<WifiDirectOffer>,
-    next: Option<Transport>,
-    waiting: Option<oneshot::Receiver<Transport>>,
+    pub next: Option<Transport>,
+    pub waiting: Option<oneshot::Receiver<Transport>>,
     pub last_sent: bool,
     pub deferred: Vec<wire::OfflineFrame>,
     last_received: bool,
@@ -267,11 +274,14 @@ impl Drop for Upgrade {
     fn drop(&mut self) {
         if self.waiting.is_some() {
             if let Some(context) = &self.context {
-                context
-                    .pending
-                    .lock()
-                    .unwrap()
-                    .remove(self.remote.as_deref().unwrap_or(""));
+                let mut pending = context.pending.lock().unwrap();
+                let remote = self.remote.as_deref().unwrap_or("");
+                if pending.remove(remote).is_none() && pending.len() == 1 {
+                    let key = pending.keys().next().cloned();
+                    if let Some(k) = key {
+                        pending.remove(&k);
+                    }
+                }
             }
         }
     }
@@ -302,19 +312,17 @@ impl Upgrade {
         if !self.bluetooth || self.complete || self.waiting.is_some() || self.next.is_some() {
             return Ok(None);
         }
-        let context = self.context.as_ref().context("Missing upgrade context")?;
+        let Some(context) = self.context.as_ref() else {
+            return Ok(None);
+        };
 
         // 1. Primary receiver offer: local Wi-Fi LAN if available and not yet failed/attempted.
         if !self.lan_attempted && !self.lan_failed && self.direct_offered.is_none() {
             if let Some(address) = context.address {
-                let remote = self
-                    .remote
-                    .as_deref()
-                    .context("Missing remote endpoint ID")?
-                    .to_owned();
+                let remote = self.remote.as_deref().unwrap_or("").to_owned();
                 let (tx, rx) = oneshot::channel();
                 let mut pending = context.pending.lock().unwrap();
-                if pending.contains_key(&remote) {
+                if !remote.is_empty() && pending.contains_key(&remote) {
                     bail!("Endpoint already upgrading");
                 }
                 pending.insert(remote, tx);
@@ -355,14 +363,10 @@ impl Upgrade {
                 {
                     bail!("Invalid local Wi-Fi Direct offer configuration");
                 }
-                let remote = self
-                    .remote
-                    .as_deref()
-                    .context("Missing remote endpoint ID")?
-                    .to_owned();
+                let remote = self.remote.as_deref().unwrap_or("").to_owned();
                 let (tx, rx) = oneshot::channel();
                 let mut pending = context.pending.lock().unwrap();
-                if pending.contains_key(&remote) {
+                if !remote.is_empty() && pending.contains_key(&remote) {
                     bail!("Endpoint already upgrading");
                 }
                 pending.insert(remote, tx);
@@ -487,8 +491,14 @@ impl Upgrade {
                     Ok(socket) => Transport::new(socket),
                     Err(error) => {
                         warn!(
-                            "Wi-Fi handover to {address} failed; retaining encrypted Bluetooth transport: {error:#}"
+                            "Wi-Fi handover to {address} failed; checking Wi-Fi Direct fallback: {error:#}"
                         );
+                        self.lan_failed = true;
+                        self.lan_attempted = true;
+                        if let Ok(Some(offer)) = self.offer() {
+                            info!("Peer LAN unreachable (e.g. AP isolation); sender proposing Wi-Fi Direct offer");
+                            return Ok(Action::Send(vec![offer]));
+                        }
                         return Ok(self.retain_bluetooth(path));
                     }
                 };
