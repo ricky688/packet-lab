@@ -64,4 +64,13 @@ This is an alpha experiment. Compatibility with every school network, Wi-Fi Dire
 
 Outgoing transfers remain in progress after the final payload chunk until the receiver closes the transfer connection. Receiver errors and a 30-second finalization timeout fail the transfer. This follows the receiver-driven completion ordering in Google Nearby's `OutgoingShareSession::DelayComplete`. File introductions include distinct nonzero attachment IDs for Google's receiver.
 
+## Acknowledgements & Citations
+
+Packet Lab builds upon and owes gratitude to the following open-source projects:
+
+- **[Packet](https://github.com/nozwock/packet)** by [nozwock](https://github.com/nozwock) — The foundational GTK4/Libadwaita Linux Quick Share client.
+- **[rquickshare](https://github.com/Martichou/rquickshare)** by [Martichou](https://github.com/Martichou) & [nozwock](https://github.com/nozwock) — The core protocol engine for Quick Share on Linux.
+- **[Google Nearby Connections](https://github.com/google/nearby)** — Google's official open-source repository defining the Nearby Connections and Nearby Sharing specifications.
+- **[NearDrop](https://github.com/grishka/NearDrop)** by [grishka](https://github.com/grishka) — Pioneering open-source reverse-engineering and implementation of Nearby Share for non-Android platforms.
+
 Source attribution and licenses are in [UPSTREAM.md](UPSTREAM.md) and [LICENSE](LICENSE).
