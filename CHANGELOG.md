@@ -19,7 +19,7 @@
 
 - Implemented `BandwidthUpgradeRetry` (frame type 12) protobuf wire format and handler in `rqs_lib`, responding to sender upgrade retries with supported mediums (`WifiHotspot`, `WifiDirect`, `WifiLan`) and explaining previously unhandled 10-second upgrade timeouts.
 - Added optional `RQS_AUTO_ACCEPT` test environment variable to streamline automated integration testing of incoming transfers.
-- Successfully verified end-to-end Phone-to-Linux Quick Share file transfer over local Wi-Fi LAN with active VPNs retained on both the Nearby SM-S9280 (serial Android-Device, 192.168.1.128) and Linux host (wlo1, 192.168.1.143).
+- Successfully verified end-to-end Phone-to-Linux Quick Share file transfer over local Wi-Fi LAN with active VPNs retained on both the Android device and Linux host (wlo1).
 - Received synthetic test file `packet-lab-test-1MiB.bin` (1,048,576 bytes) in 163 ms (~6.4 MB/s), with 100% bit-for-bit SHA-256 match:
   `3ab07235fcc8fe594e8771ab6fe19d784f83abe8f8bb7cd6a17f5384568b29c9`.
 - Verified that Android Quick Share directly connected to Linux TCP port 9300 over Wi-Fi, completed UKEY2 verification (PIN 3202), and reported "已發送" (Sent).
@@ -41,7 +41,7 @@
 
 - Report failed Wi-Fi LAN upgrades to the peer and retain the encrypted Bluetooth channel.
 - Release large-payload consent after LAN failure without retaining the old handover timer.
-- Keep slow Bluetooth transfers alive using smaller chunks and control-message handling; verified a 1 MiB Nearby transfer with matching hashes.
+- Keep slow Bluetooth transfers alive using smaller chunks and control-message handling; verified a 1 MiB transfer with matching hashes.
 
 ## Discovery cleanup — 2026-10-24
 
@@ -56,12 +56,12 @@
 
 ## Bluetooth / Wi-Fi experiment — 2026-10-23
 
-- Publish a receiving FEF3 BLE advertisement and GATT endpoint slot, fixing Nearby discovery of the Linux receiver; complete incoming transfer verification remains pending.
+- Publish a receiving FEF3 BLE advertisement and GATT endpoint slot, fixing peer discovery of the Linux receiver; complete incoming transfer verification remains pending.
 
 - Discover Nearby Bluetooth endpoints and connect with RFCOMM without entering an IP.
 - Follow receiver-initiated Wi-Fi LAN upgrade while retaining session encryption and sequence numbers; bound handover waiting and keep the TCP listener responsive.
 - Distinguish same-name Bluetooth cards by address and restore adapter settings on normal application quit.
-- Verified a 16 MiB Nearby phone transfer on school Wi-Fi with both VPNs enabled and matching SHA-256. See `docs/BLUETOOTH-WIFI.md` for remaining limits.
+- Verified a 16 MiB phone transfer over Wi-Fi with both VPNs enabled and matching SHA-256.
 
 ## Local fixes — 2026-10-23
 

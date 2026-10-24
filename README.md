@@ -12,9 +12,9 @@ Extract the Linux x86_64 archive and run `./packet-lab` from its folder. This is
 
 Keep Bluetooth enabled and open Quick Share's receive screen on the phone. In **Send To…**, select its Bluetooth card, compare the pairing code and accept on the phone. The address shown below each Bluetooth name helps distinguish devices with the same name.
 
-Packet Lab establishes the encrypted Nearby session over Bluetooth Classic/RFCOMM. For large payloads it follows the receiver's Wi-Fi LAN upgrade negotiation, retaining the encryption keys and sequence numbers. Small payloads below Nearby's 1 MB threshold can remain on Bluetooth. The Nearby phone was verified with a 16 MiB Bluetooth-to-Wi-Fi transfer on the school network with both VPNs enabled; this is not a guarantee for other network policies.
+Packet Lab establishes the encrypted Nearby session over Bluetooth Classic/RFCOMM. For large payloads it follows the receiver's Wi-Fi LAN upgrade negotiation, retaining the encryption keys and sequence numbers. Small payloads below Nearby's 1 MB threshold can remain on Bluetooth. Verified with end-to-end file transfers with active VPNs enabled; this is not a guarantee for other network policies.
 
-This first implementation supports encoded Nearby Bluetooth names and devices exposing Nearby's SDP service. A first connection may need pairing/service discovery in the system Bluetooth settings. Scanning remote BLE GATT slots, Wi-Fi Direct, and Internet relaying are not implemented. Wi-Fi LAN handover still requires direct local TCP reachability. See [Bluetooth validation](docs/BLUETOOTH-WIFI.md).
+This implementation supports encoded Nearby Bluetooth names and devices exposing Nearby's SDP service, as well as BLE 0xFEF3 advertisement resolution. Wi-Fi LAN handover still requires direct local TCP reachability.
 
 ## Send when discovery fails
 

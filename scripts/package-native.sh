@@ -26,10 +26,6 @@ install -m 644 data/icons/io.github.ricky688.PacketLab.svg "$bundle/share/icons/
 install -m 644 LICENSE "$bundle/licenses/Packet-GPL-3.0.txt"
 install -m 644 subprojects/rqs_lib/LICENSE "$bundle/licenses/rquickshare-GPL-3.0.txt"
 install -m 644 README.md UPSTREAM.md CHANGELOG.md "$bundle/"
-install -m 644 docs/LOCAL-VALIDATION.md "$bundle/LOCAL-VALIDATION.md"
-install -m 644 docs/BLUETOOTH-WIFI.md "$bundle/BLUETOOTH-WIFI.md"
-install -m 644 docs/SAMSUNG-BLUETOOTH-ANALYSIS-2026-10-23.md "$bundle/SAMSUNG-BLUETOOTH-ANALYSIS-2026-10-23.md"
-install -m 644 docs/REMOTE-COMPLETION.md "$bundle/REMOTE-COMPLETION.md"
 {
     printf 'Packet Lab %s\nArchitecture: %s\n' "$version" "$architecture"
     printf '\nBuild environment:\n'
