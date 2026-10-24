@@ -222,7 +222,8 @@ impl Upgrade {
                         .context("Missing Wi-Fi LAN socket")?,
                 )?;
                 let mut socket =
-                    Transport::new(Connector::from_env()?.connect(&address.to_string()).await?);
+                    Transport::new(Connector::from_env()?.connect(&address.to_string()).await
+                        .with_context(|| format!("Wi-Fi handover to {address} failed. Check local network access; public Wi-Fi may isolate devices"))?);
                 let mut intro = event(EventType::ClientIntroduction);
                 intro
                     .v1

@@ -914,10 +914,12 @@ impl InboundRequest {
         &mut self,
         v1_frame: &sharing_nearby::V1Frame,
     ) -> Result<(), anyhow::Error> {
-        let introduction = v1_frame
-            .introduction
-            .as_ref()
-            .ok_or_else(|| anyhow!("Expected introduction after paired-key result; received sharing frame type {}", v1_frame.r#type.unwrap_or_default()))?;
+        let introduction = v1_frame.introduction.as_ref().ok_or_else(|| {
+            anyhow!(
+                "Expected introduction after paired-key result; received sharing frame type {}",
+                v1_frame.r#type.unwrap_or_default()
+            )
+        })?;
 
         // No need to inform the channel here, we'll do it anyway with files info
         self.update_state(
@@ -1480,6 +1482,7 @@ impl InboundRequest {
         let _ = self.sender.send(ChannelMessage {
             id: self.state.id.clone(),
             msg: channel::Message::Client(MessageClient {
+                error: None,
                 kind: TransferKind::Inbound,
                 state: Some(self.state.state.clone()),
                 metadata: self.state.transfer_metadata.clone(),

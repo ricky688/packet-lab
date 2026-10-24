@@ -68,6 +68,9 @@ pub fn handle_recipient_card_clicked(win: &Window, list_box: &gtk::ListBox, row:
 }
 
 pub(crate) fn emit_send_request(win: &Window, model_item: &SendRequestState) {
+    if model_item.is_active() {
+        return;
+    }
     let imp = win.imp();
 
     let endpoint_info = model_item.endpoint_info();
@@ -333,7 +336,8 @@ pub fn create_recipient_card(
         imp,
         #[weak]
         model_item,
-        move |_button| {
+        move |button| {
+            button.set_visible(false);
             emit_send_request(&imp.obj(), &model_item);
         }
     ));
@@ -526,7 +530,8 @@ pub fn create_recipient_card(
                         retry_button.set_visible(true);
 
                         result_label.set_visible(true);
-                        result_label.set_label(&gettext("Failed"));
+                        result_label
+                            .set_label(client_msg.error.as_deref().unwrap_or(&gettext("Failed")));
                         result_label.set_css_classes(&["error"]);
                     }
                     RqsState::Rejected => {

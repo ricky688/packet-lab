@@ -15,6 +15,7 @@ pub enum TransferKind {
 
 #[derive(Debug, Clone)]
 pub struct MessageClient {
+    pub error: Option<String>,
     pub kind: TransferKind,
     pub state: Option<TransferState>,
     pub metadata: Option<TransferMetadata>,

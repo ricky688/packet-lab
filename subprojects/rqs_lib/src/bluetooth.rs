@@ -67,44 +67,51 @@ pub(crate) async fn discover(
         };
         match event {
             AdapterEvent::DeviceAdded(address) => {
-                let device = adapter.device(address)?;
-                if let Some(display) = device.name().await? {
-                    let parsed = parse_name(&display).ok();
-                    // Some Android builds retain their normal Bluetooth name but expose Nearby's SDP UUID.
-                    let nearby_service = device.class().await?.is_some()
-                        && device
-                            .uuids()
-                            .await?
-                            .is_some_and(|ids| ids.contains(&SERVICE_UUID));
-                    if parsed.is_some() || nearby_service {
-                        let (endpoint, kind, name) = parsed
-                            .map(|(id, kind, name)| {
-                                (String::from_utf8_lossy(&id).into_owned(), kind, name)
-                            })
-                            .unwrap_or_else(|| (String::new(), DeviceType::Unknown, display));
-                        let id = format!("bluetooth://{address}");
-                        let info = EndpointInfo {
-                            fullname: endpoint,
-                            id: id.clone(),
-                            name: Some(name),
-                            ip: Some(id),
-                            port: None,
-                            rtype: Some(kind),
-                            present: Some(true),
-                        };
-                        if known
-                            .get(&address)
-                            .and_then(|p: &EndpointInfo| p.name.as_ref())
-                            != info.name.as_ref()
-                        {
-                            info!(
-                                "Bluetooth Nearby endpoint {} ({address})",
-                                info.name.as_deref().unwrap_or("Unknown")
-                            );
-                            let _ = sender.send(info.clone());
+                let result: anyhow::Result<()> = async {
+                    let device = adapter.device(address)?;
+                    if let Some(display) = device.name().await? {
+                        let parsed = parse_name(&display).ok();
+                        // Some Android builds retain their normal Bluetooth name but expose Nearby's SDP UUID.
+                        let nearby_service = device.class().await?.is_some()
+                            && device
+                                .uuids()
+                                .await?
+                                .is_some_and(|ids| ids.contains(&SERVICE_UUID));
+                        if parsed.is_some() || nearby_service {
+                            let (endpoint, kind, name) = parsed
+                                .map(|(id, kind, name)| {
+                                    (String::from_utf8_lossy(&id).into_owned(), kind, name)
+                                })
+                                .unwrap_or_else(|| (String::new(), DeviceType::Unknown, display));
+                            let id = format!("bluetooth://{address}");
+                            let info = EndpointInfo {
+                                fullname: endpoint,
+                                id: id.clone(),
+                                name: Some(name),
+                                ip: Some(id),
+                                port: None,
+                                rtype: Some(kind),
+                                present: Some(true),
+                            };
+                            if known
+                                .get(&address)
+                                .and_then(|p: &EndpointInfo| p.name.as_ref())
+                                != info.name.as_ref()
+                            {
+                                info!(
+                                    "Bluetooth Nearby endpoint {} ({address})",
+                                    info.name.as_deref().unwrap_or("Unknown")
+                                );
+                                let _ = sender.send(info.clone());
+                            }
+                            known.insert(address, info);
                         }
-                        known.insert(address, info);
                     }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = result {
+                    debug!("Skipping unavailable Bluetooth device {address}: {error}");
                 }
             }
             AdapterEvent::DeviceRemoved(address) => {
@@ -245,11 +252,16 @@ pub(crate) async fn run(
                     }
                     let device = adapter.device(request.address)?;
                     pending.insert(request.address, request.reply);
-                    attempts.spawn(async move { (request.address, device.connect_profile(&SERVICE_UUID).await) });
+                    attempts.spawn(async move {
+                        let result = tokio::time::timeout(Duration::from_secs(12), device.connect_profile(&SERVICE_UUID))
+                            .await.context("Bluetooth connection timed out")
+                            .and_then(|result| result.map_err(anyhow::Error::from));
+                        (request.address, result)
+                    });
                 }
                 Some(done) = attempts.join_next() => {
                     if let Ok((address, Err(err))) = done {
-                        if let Some(reply) = pending.remove(&address) { let _ = reply.send(Err(err.into())); }
+                        if let Some(reply) = pending.remove(&address) { let _ = reply.send(Err(err)); }
                     }
                 }
                 Some(request) = profile.next() => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## Retry reliability — 2026-10-24
+
+- Prevent duplicate sends and retries from falsely failing an active recipient.
+- Keep Bluetooth discovery running when a nearby device disappears.
+- Bound BlueZ connection attempts and clean up outgoing tasks on service shutdown.
+- Preserve failure IDs and show detailed connection/handover errors on recipient cards.
+
 ## Bluetooth / Wi-Fi experiment — 2026-10-23
 
 - Publish a receiving FEF3 BLE advertisement and GATT endpoint slot, fixing Nearby discovery of the Linux receiver; complete incoming transfer verification remains pending.

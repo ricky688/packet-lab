@@ -53,15 +53,25 @@ impl TcpServer {
     pub async fn run(&mut self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
         info!("{INNER_NAME}: service starting");
 
+        let mut active = std::collections::HashSet::new();
+        let mut outgoing = tokio::task::JoinSet::new();
         loop {
             let cctk = ctk.clone();
 
             tokio::select! {
+                biased;
                 _ = ctk.cancelled() => {
                     info!("{INNER_NAME}: tracker cancelled, breaking");
                     break;
                 }
+                Some(done) = outgoing.join_next() => {
+                    if let Ok(address) = done { active.remove(&address); }
+                }
                 Some(i) = self.connect_receiver.recv() => {
+                    if !active.insert(i.addr.clone()) {
+                        debug!("Ignoring duplicate send while this device is active");
+                        continue;
+                    }
                     info!("{INNER_NAME}: connect_receiver: got {:?}", i);
                     let endpoint = self.endpoint_id;
                     let connector = self.connector.clone();
@@ -69,16 +79,18 @@ impl TcpServer {
                     let upgrade = self.upgrade.clone();
                     #[cfg(all(feature = "experimental", target_os = "linux"))]
                     let bluetooth = self.bluetooth.clone();
-                    tokio::spawn(async move {
+                    outgoing.spawn(async move {
+                        let address = i.addr.clone();
                         let id = i.id.clone();
                         if let Err(error) = connect_session(endpoint, connector, sender.clone(), upgrade,
                             #[cfg(all(feature = "experimental", target_os = "linux"))] bluetooth,
                             cctk, i).await {
                             error!("{INNER_NAME}: error sending: {error}");
                             let _ = sender.send(ChannelMessage { id, msg: channel::Message::Client(MessageClient {
-                                kind: TransferKind::Outbound, state: Some(TransferState::Disconnected), metadata: None,
+                                error: Some(format!("{error:#}")), kind: TransferKind::Outbound, state: Some(TransferState::Disconnected), metadata: None,
                             }) });
                         }
+                        address
                     });
                 }
                 r = self.tcp_listener.accept() => {
@@ -172,8 +184,9 @@ async fn connect_session(
 
                             if or.state.state != TransferState::Finished && or.state.state != TransferState::Cancelled {
                                 let _ = sender.clone().send(ChannelMessage {
-                                    id: si.addr,
+                                    id: or.state.id.clone(),
                                     msg: channel::Message::Client(MessageClient {
+                                        error: Some(format!("{e:#}")),
                                         kind: TransferKind::Outbound,
                                         state: Some(TransferState::Disconnected),
                                         metadata: Default::default()
@@ -215,6 +228,7 @@ pub(crate) async fn receive(
                 let _ = sender.send(ChannelMessage {
                     id: id.clone(),
                     msg: channel::Message::Client(MessageClient {
+                        error: Some(format!("{error:#}")),
                         kind: TransferKind::Inbound,
                         state: Some(TransferState::Disconnected),
                         metadata: None,
@@ -267,6 +281,71 @@ mod tests {
                 .unwrap(),
             0
         );
+        token.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_send_does_not_fail_active_transfer_and_retry_is_released() {
+        let peer = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (sender, mut events) = broadcast::channel(50);
+        let (requests, receiver) = mpsc::channel(4);
+        let mut server = TcpServer::new(*b"TEST", listener, sender, receiver).unwrap();
+        let token = CancellationToken::new();
+        let child = token.clone();
+        let task = tokio::spawn(async move { server.run(child).await });
+        let request = SendInfo {
+            endpoint_id: None,
+            id: "same-peer".into(),
+            name: "peer".into(),
+            addr: peer.local_addr().unwrap().to_string(),
+            ob: OutboundPayload::Files(vec![]),
+        };
+        requests.send(request.clone()).await.unwrap();
+        let (connection, _) = peer.accept().await.unwrap();
+        requests.send(request.clone()).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), peer.accept())
+                .await
+                .is_err()
+        );
+        while let Ok(event) = events.try_recv() {
+            assert_ne!(
+                event.msg.as_client().and_then(|m| m.state.clone()),
+                Some(TransferState::Disconnected)
+            );
+        }
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event
+                    .msg
+                    .as_client()
+                    .is_some_and(|m| m.state == Some(TransferState::Disconnected))
+                {
+                    assert_eq!(event.id, "same-peer");
+                    assert!(
+                        event
+                            .msg
+                            .as_client()
+                            .unwrap()
+                            .error
+                            .as_ref()
+                            .is_some_and(|e| !e.is_empty())
+                    );
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        requests.send(request).await.unwrap();
+        let _retry = tokio::time::timeout(Duration::from_secs(2), peer.accept())
+            .await
+            .unwrap()
+            .unwrap();
         token.cancel();
         task.await.unwrap().unwrap();
     }

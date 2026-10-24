@@ -1575,6 +1575,7 @@ impl OutboundRequest {
         let _ = self.sender.send(ChannelMessage {
             id: self.state.id.clone(),
             msg: channel::Message::Client(MessageClient {
+                error: None,
                 kind: TransferKind::Outbound,
                 state: Some(self.state.state.clone()),
                 metadata: self.state.transfer_metadata.clone(),
