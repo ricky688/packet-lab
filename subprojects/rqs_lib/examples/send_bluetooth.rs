@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let mut events = service.message_sender.subscribe();
     let (requests, _) = service.run().await?;
-    let result = tokio::time::timeout(Duration::from_secs(90), async {
+    let result = tokio::time::timeout(Duration::from_secs(300), async {
         requests
             .send(SendInfo {
                 endpoint_id: None,

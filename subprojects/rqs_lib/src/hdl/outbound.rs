@@ -149,6 +149,11 @@ impl OutboundRequest {
     }
 
     pub async fn handle(&mut self) -> Result<(), anyhow::Error> {
+        if self.upgrade.lan_failed {
+            if let Some(consent) = self.deferred_consent.take() {
+                return self.process_consent(&consent).await;
+            }
+        }
         // Buffer for the 4-byte length
         let mut length_buf = [0u8; 4];
 
@@ -921,17 +926,18 @@ impl OutboundRequest {
                 if self.upgrade.bluetooth
                     && !self.upgrade.complete
                     && (self.upgrade.last_sent
-                        || self
-                            .state
-                            .transfer_metadata
-                            .as_ref()
-                            .is_some_and(|m| m.total_bytes >= 1_000_000))
+                        || (!self.upgrade.lan_failed
+                            && self
+                                .state
+                                .transfer_metadata
+                                .as_ref()
+                                .is_some_and(|m| m.total_bytes >= 1_000_000)))
                 {
                     self.deferred_consent = Some(v1_frame.clone());
                     return Ok(());
                 }
                 if self.upgrade.bluetooth && !self.upgrade.complete {
-                    // Nearby keeps payloads below its 1 MB upgrade threshold on Bluetooth.
+                    // Small payloads and failed LAN upgrades retain the encrypted Bluetooth channel.
                     self.upgrade.deadline = None;
                 }
                 info!("State is now State::SendingFiles");
@@ -1046,6 +1052,27 @@ impl OutboundRequest {
 
                     // Loop until we reached end of file
                     loop {
+                        if self.upgrade.bluetooth && !self.upgrade.complete {
+                            let mut header = [0u8; 4];
+                            match tokio::time::timeout(
+                                Duration::from_millis(1),
+                                self.socket.read(&mut header[..1]),
+                            )
+                            .await
+                            {
+                                Ok(Ok(0)) => {
+                                    return Err(anyhow!(
+                                        "Receiver closed during Bluetooth transfer"
+                                    ));
+                                }
+                                Ok(Ok(_)) => {
+                                    stream_read_exact(&mut self.socket, &mut header[1..]).await?;
+                                    Box::pin(self._handle(header)).await?;
+                                }
+                                Ok(Err(error)) => return Err(error.into()),
+                                Err(_) => {}
+                            }
+                        }
                         // Since this task's runtime is blocked with the outer loop,
                         // OutboundRequest::handle() will not be called again.
                         // Thus, we need to check for cancellation here.
@@ -1107,7 +1134,12 @@ impl OutboundRequest {
                                 break;
                             }
 
-                            let mut buffer = vec![0u8; 512 * 1024];
+                            let chunk_size = if self.upgrade.bluetooth && !self.upgrade.complete {
+                                8 * 1024
+                            } else {
+                                512 * 1024
+                            };
+                            let mut buffer = vec![0u8; chunk_size];
                             let bytes_read = curr_state.file.as_ref().unwrap().read(&mut buffer)?;
 
                             (
@@ -1831,6 +1863,26 @@ mod tests {
                 .contains("within 30 seconds")
         );
         assert_ne!(request.state.state, TransferState::Finished);
+    }
+
+    #[tokio::test]
+    async fn failed_lan_releases_large_payload_consent_on_bluetooth() {
+        let (mut request, mut peer) = text_sender().await;
+        request.upgrade.bluetooth = true;
+        request
+            .state
+            .transfer_metadata
+            .as_mut()
+            .unwrap()
+            .total_bytes = 16 * 1024 * 1024;
+        request.process_consent(&consent()).await.unwrap();
+        assert!(request.deferred_consent.is_some());
+        request.upgrade.lan_failed = true;
+        request.handle().await.unwrap();
+        drain_payload(&mut peer).await;
+        assert_eq!(request.state.state, TransferState::SendingFiles);
+        assert!(request.upgrade.deadline.is_none());
+        assert!(!request.upgrade.complete);
     }
 
     #[tokio::test]

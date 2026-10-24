@@ -1,5 +1,11 @@
 # Changelog
 
+## Bluetooth fallback — 2026-10-24
+
+- Report failed Wi-Fi LAN upgrades to the peer and retain the encrypted Bluetooth channel.
+- Release large-payload consent after LAN failure without retaining the old handover timer.
+- Keep slow Bluetooth transfers alive using smaller chunks and control-message handling; verified a 1 MiB Nearby transfer with matching hashes.
+
 ## Discovery cleanup — 2026-10-24
 
 - Stop the previous discovery session on refresh and shut down its mDNS daemon.

@@ -116,6 +116,7 @@ pub(crate) struct Upgrade {
     pub context: Option<Context>,
     pub remote: Option<String>,
     pub bluetooth: bool,
+    pub lan_failed: bool,
     next: Option<Transport>,
     waiting: Option<oneshot::Receiver<Transport>>,
     pub last_sent: bool,
@@ -145,6 +146,21 @@ pub(crate) enum Action {
 }
 
 impl Upgrade {
+    fn retain_bluetooth(&mut self, path: &bwu::UpgradePathInfo) -> Action {
+        self.lan_failed = true;
+        self.deadline = None;
+        let mut failure = event(EventType::UpgradeFailure);
+        failure
+            .v1
+            .as_mut()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_mut()
+            .unwrap()
+            .upgrade_path_info = Some(path.clone());
+        Action::Send(vec![failure])
+    }
+
     pub fn offer(&mut self) -> anyhow::Result<Option<wire::OfflineFrame>> {
         if !self.bluetooth || self.complete || self.waiting.is_some() || self.next.is_some() {
             return Ok(None);
@@ -221,9 +237,16 @@ impl Upgrade {
                         .as_ref()
                         .context("Missing Wi-Fi LAN socket")?,
                 )?;
-                let mut socket =
-                    Transport::new(Connector::from_env()?.connect(&address.to_string()).await
-                        .with_context(|| format!("Wi-Fi handover to {address} failed. Check local network access; public Wi-Fi may isolate devices"))?);
+                let connection = Connector::from_env()?.connect(&address.to_string()).await;
+                let mut socket = match connection {
+                    Ok(socket) => Transport::new(socket),
+                    Err(error) => {
+                        warn!(
+                            "Wi-Fi handover to {address} failed; retaining encrypted Bluetooth transport: {error:#}"
+                        );
+                        return Ok(self.retain_bluetooth(path));
+                    }
+                };
                 let mut intro = event(EventType::ClientIntroduction);
                 intro
                     .v1
@@ -369,6 +392,33 @@ async fn read_plain(stream: &mut Transport) -> anyhow::Result<wire::OfflineFrame
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_lan_keeps_old_channel_and_reports_the_rejected_path() {
+        let mut upgrade = Upgrade::default();
+        upgrade.bluetooth = true;
+        upgrade.deadline = Some(tokio::time::Instant::now());
+        let path = bwu::UpgradePathInfo {
+            medium: Some(Medium::WifiLan.into()),
+            ..Default::default()
+        };
+        let Action::Send(frames) = upgrade.retain_bluetooth(&path) else {
+            panic!("must notify peer");
+        };
+        let packet = frames[0]
+            .v1
+            .as_ref()
+            .unwrap()
+            .bandwidth_upgrade_negotiation
+            .as_ref()
+            .unwrap();
+        assert_eq!(packet.event_type(), EventType::UpgradeFailure);
+        assert_eq!(packet.upgrade_path_info.as_ref(), Some(&path));
+        assert!(upgrade.lan_failed);
+        assert!(upgrade.deadline.is_none());
+        assert!(!upgrade.last_sent && !upgrade.last_received && !upgrade.complete);
+        assert!(upgrade.next.is_none());
+    }
+
     #[tokio::test]
     async fn offered_channel_drains_old_stream_before_switching() {
         let mut context = Context::new(*b"TEST", 9300);
