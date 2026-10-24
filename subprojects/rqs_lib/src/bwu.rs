@@ -39,24 +39,30 @@ impl Context {
         let interface = std::env::var("RQS_LAN_ROUTE")
             .ok()
             .and_then(|r| r.split_once('%').map(|(_, i)| i.to_owned()));
-        let address = get_if_addrs::get_if_addrs().ok().and_then(|interfaces| {
-            interfaces.into_iter().find_map(|i| {
-                let eligible = interface.as_ref().map_or_else(
-                    || {
-                        i.name.starts_with("wl")
-                            || i.name.starts_with("en")
-                            || i.name.starts_with("eth")
-                    },
-                    |name| *name == i.name,
-                );
-                match i.ip() {
-                    std::net::IpAddr::V4(ip) if eligible && ip.is_private() => {
-                        Some(SocketAddrV4::new(ip, port))
+        let bluetooth_only = Connector::from_env()
+            .ok()
+            .is_some_and(|connector| connector.is_bluetooth());
+        let address = get_if_addrs::get_if_addrs()
+            .ok()
+            .filter(|_| !bluetooth_only)
+            .and_then(|interfaces| {
+                interfaces.into_iter().find_map(|i| {
+                    let eligible = interface.as_ref().map_or_else(
+                        || {
+                            i.name.starts_with("wl")
+                                || i.name.starts_with("en")
+                                || i.name.starts_with("eth")
+                        },
+                        |name| *name == i.name,
+                    );
+                    match i.ip() {
+                        std::net::IpAddr::V4(ip) if eligible && ip.is_private() => {
+                            Some(SocketAddrV4::new(ip, port))
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                }
-            })
-        });
+                })
+            });
         Self {
             endpoint: String::from_utf8_lossy(&endpoint).into(),
             address,
@@ -166,9 +172,9 @@ impl Upgrade {
             return Ok(None);
         }
         let context = self.context.as_ref().context("Missing upgrade context")?;
-        let address = context
-            .address
-            .context("No physical Wi-Fi/Ethernet IPv4 address for handover")?;
+        let Some(address) = context.address else {
+            return Ok(None);
+        };
         let remote = self
             .remote
             .as_deref()

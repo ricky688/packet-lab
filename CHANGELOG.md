@@ -2,6 +2,8 @@
 
 ## PAN receiving experiment — 2026-10-24
 
+- Use Bluetooth-only Nearby discovery and transfer when the explicitly selected interface belongs to Bluetooth; avoid announcing PAN as Wi-Fi LAN.
+
 - Explicitly request an automatic RFCOMM listener for the custom NearbySharing UUID.
 - Resume accepted incoming transfers after a rejected LAN upgrade instead of leaving consent deferred.
 

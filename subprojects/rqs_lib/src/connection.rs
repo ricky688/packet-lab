@@ -56,6 +56,17 @@ impl Connector {
         self.route.as_ref().map(|route| route.interface.as_str())
     }
 
+    pub(crate) fn is_bluetooth(&self) -> bool {
+        self.interface().is_some_and(|interface| {
+            std::fs::canonicalize(format!("/sys/class/net/{interface}/device"))
+                .ok()
+                .is_some_and(|path| {
+                    path.components()
+                        .any(|part| part.as_os_str() == "bluetooth")
+                })
+        })
+    }
+
     pub(crate) fn from_env() -> io::Result<Self> {
         let route = match std::env::var("RQS_LAN_ROUTE") {
             Ok(value) => Some(LanRoute::parse(&value)?),

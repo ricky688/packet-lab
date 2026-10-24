@@ -110,8 +110,10 @@ impl InboundRequest {
                             match action {
                                 TransferAction::ConsentAccept => {
                                     if self.upgrade.bluetooth && !self.upgrade.complete {
-                                        self.deferred_consent = true;
-                                        if let Some(offer) = self.upgrade.offer()? { self.encrypt_and_send(&offer).await?; }
+                                        if let Some(offer) = self.upgrade.offer()? {
+                                            self.deferred_consent = true;
+                                            self.encrypt_and_send(&offer).await?;
+                                        } else { self.accept_transfer().await?; }
                                     } else { self.accept_transfer().await?; }
                                 },
                                 TransferAction::ConsentDecline => {
@@ -1503,6 +1505,33 @@ impl InboundRequest {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn bluetooth_without_lan_accepts_without_deferring_consent() {
+        let (socket, mut peer) = tokio::io::duplex(2048);
+        let (events, _) = tokio::sync::broadcast::channel(10);
+        let mut request = InboundRequest::new(socket, "test-phone".into(), events.clone());
+        request.state.encrypt_key = Some(vec![1; 32]);
+        request.state.send_hmac_key = Some(vec![2; 32]);
+        request.state.state = TransferState::WaitingForUserConsent;
+        request.upgrade.bluetooth = true;
+        let mut context = crate::bwu::Context::new(*b"TEST", 9300);
+        context.address = None;
+        request.upgrade.context = Some(context);
+        events
+            .send(ChannelMessage {
+                id: "test-phone".into(),
+                msg: channel::Message::Lib {
+                    action: TransferAction::ConsentAccept,
+                },
+            })
+            .unwrap();
+        request.handle().await.unwrap();
+        assert!(!request.deferred_consent && !request.upgrade.complete);
+        assert!(request.upgrade.deadline.is_none());
+        assert_eq!(request.state.state, TransferState::ReceivingFiles);
+        assert!(peer.read_u32().await.unwrap() > 0);
+    }
 
     #[tokio::test]
     async fn rejected_upgrade_resumes_already_accepted_incoming_transfer() {

@@ -54,8 +54,14 @@ impl MDnsServer {
         let daemon = ServiceDaemon::new()?;
         if let Some(interface) = connector.interface() {
             daemon.disable_interface(IfKind::All)?;
-            daemon.enable_interface(IfKind::Name(interface.to_owned()))?;
-            info!("{INNER_NAME}: advertising only on selected local interface {interface}");
+            if connector.is_bluetooth() {
+                info!(
+                    "{INNER_NAME}: Bluetooth PAN selected; using Nearby Bluetooth discovery without Wi-Fi LAN advertisement"
+                );
+            } else {
+                daemon.enable_interface(IfKind::Name(interface.to_owned()))?;
+                info!("{INNER_NAME}: advertising only on selected local interface {interface}");
+            }
         }
 
         Ok(Self {
