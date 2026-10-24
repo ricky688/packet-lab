@@ -1,5 +1,10 @@
 # Changelog
 
+## PAN receiving experiment — 2026-10-24
+
+- Restrict receiver mDNS advertisements to the explicitly selected local interface.
+- Retain encrypted Bluetooth after a peer rejects our pending LAN upgrade, with matching-path validation and pending-session cleanup.
+
 ## Bluetooth fallback — 2026-10-24
 
 - Report failed Wi-Fi LAN upgrades to the peer and retain the encrypted Bluetooth channel.

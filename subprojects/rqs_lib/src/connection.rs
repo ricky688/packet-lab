@@ -52,6 +52,10 @@ impl LanRoute {
 }
 
 impl Connector {
+    pub(crate) fn interface(&self) -> Option<&str> {
+        self.route.as_ref().map(|route| route.interface.as_str())
+    }
+
     pub(crate) fn from_env() -> io::Result<Self> {
         let route = match std::env::var("RQS_LAN_ROUTE") {
             Ok(value) => Some(LanRoute::parse(&value)?),

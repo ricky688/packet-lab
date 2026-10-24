@@ -312,7 +312,39 @@ impl Upgrade {
             {
                 Ok(Action::Switch)
             }
-            EventType::UpgradeFailure => bail!("Peer rejected Wi-Fi upgrade"),
+            EventType::UpgradeFailure => {
+                let path = packet
+                    .upgrade_path_info
+                    .as_ref()
+                    .context("Missing failed upgrade path")?;
+                let address = lan_address(
+                    path.wifi_lan_socket
+                        .as_ref()
+                        .context("Missing failed Wi-Fi socket")?,
+                )?;
+                let context = self
+                    .context
+                    .as_ref()
+                    .context("Missing failed upgrade context")?;
+                if path.medium() != Medium::WifiLan
+                    || self.waiting.is_none()
+                    || self.last_sent
+                    || self.last_received
+                    || context.address != Some(address)
+                {
+                    bail!("Unsolicited or mismatched upgrade failure");
+                }
+                context
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .remove(self.remote.as_deref().unwrap_or(""));
+                self.waiting = None;
+                self.deadline = None;
+                self.lan_failed = true;
+                warn!("Peer rejected LAN upgrade; retaining encrypted Bluetooth transport");
+                Ok(Action::Send(Vec::new()))
+            }
             _ => bail!("Out-of-order upgrade event {:?}", packet.event_type()),
         }
     }
@@ -417,6 +449,26 @@ mod tests {
         assert!(upgrade.deadline.is_none());
         assert!(!upgrade.last_sent && !upgrade.last_received && !upgrade.complete);
         assert!(upgrade.next.is_none());
+    }
+
+    #[test]
+    fn peer_rejection_of_our_offer_preserves_bluetooth_and_cleans_pending() {
+        let mut context = Context::new(*b"TEST", 9300);
+        context.address = Some("10.42.77.1:9300".parse().unwrap());
+        let mut upgrade = Upgrade::default();
+        upgrade.context = Some(context.clone());
+        upgrade.remote = Some("PEER".into());
+        upgrade.bluetooth = true;
+        let offer = upgrade.offer().unwrap().unwrap();
+        let mut rejected = offer.v1.unwrap().bandwidth_upgrade_negotiation.unwrap();
+        rejected.event_type = Some(EventType::UpgradeFailure.into());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(upgrade.handle(&rejected)).unwrap();
+        assert!(upgrade.lan_failed);
+        assert!(upgrade.deadline.is_none() && upgrade.waiting.is_none());
+        assert!(context.pending.lock().unwrap().is_empty());
+        assert!(!upgrade.complete && !upgrade.last_sent && !upgrade.last_received);
+        assert!(runtime.block_on(upgrade.handle(&rejected)).is_err());
     }
 
     #[tokio::test]

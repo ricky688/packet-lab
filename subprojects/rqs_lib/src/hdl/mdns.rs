@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mdns_sd::{AddrType, ServiceDaemon, ServiceInfo};
+use mdns_sd::{AddrType, IfKind, ServiceDaemon, ServiceInfo};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
 use tokio::time::{Instant, interval_at};
@@ -50,9 +50,16 @@ impl MDnsServer {
         visibility_receiver: watch::Receiver<Visibility>,
     ) -> Result<Self, anyhow::Error> {
         let service_info = Self::build_service(endpoint_id, service_port, endpoint_info)?;
+        let connector = crate::connection::Connector::from_env()?;
+        let daemon = ServiceDaemon::new()?;
+        if let Some(interface) = connector.interface() {
+            daemon.disable_interface(IfKind::All)?;
+            daemon.enable_interface(IfKind::Name(interface.to_owned()))?;
+            info!("{INNER_NAME}: advertising only on selected local interface {interface}");
+        }
 
         Ok(Self {
-            daemon: ServiceDaemon::new()?,
+            daemon,
             service_info,
             ble_receiver,
             visibility_sender,
