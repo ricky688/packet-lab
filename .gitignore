@@ -24,3 +24,8 @@ __pycache__/
 /dist/
 /_build/
 /.local-validation/
+/docs/*VALIDATION*.md
+/docs/*ANALYSIS*.md
+/docs/*COMPLETION*.md
+/docs/*.excalidraw
+

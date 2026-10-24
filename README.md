@@ -62,6 +62,6 @@ The default receiver uses a dynamically allocated TCP port. Discovery may work w
 
 This is an alpha experiment. Compatibility with every school network, Wi-Fi Direct and mid-transfer resume are not promised. A manual address can help when multicast discovery is unavailable; it cannot fix network isolation that also blocks TCP.
 
-Outgoing transfers remain in progress after the final payload chunk until the receiver closes the transfer connection. Receiver errors and a 30-second finalization timeout fail the transfer. This follows the receiver-driven completion ordering in Google Nearby's `OutgoingShareSession::DelayComplete`. File introductions include distinct nonzero attachment IDs for Google's receiver. A plain-text file and the original failing `.ps1` were successfully received by Windows Quick Share after these fixes; see `docs/REMOTE-COMPLETION.md` for evidence and limits.
+Outgoing transfers remain in progress after the final payload chunk until the receiver closes the transfer connection. Receiver errors and a 30-second finalization timeout fail the transfer. This follows the receiver-driven completion ordering in Google Nearby's `OutgoingShareSession::DelayComplete`. File introductions include distinct nonzero attachment IDs for Google's receiver.
 
-Source attribution and licenses are in [UPSTREAM.md](UPSTREAM.md) and [LICENSE](LICENSE). No proprietary Nearby binaries, private device logs or school credentials are included. This local build has not been uploaded to GitHub or published to Flathub.
+Source attribution and licenses are in [UPSTREAM.md](UPSTREAM.md) and [LICENSE](LICENSE).
