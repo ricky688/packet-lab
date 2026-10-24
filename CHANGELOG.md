@@ -1,5 +1,12 @@
 # Changelog
 
+## NetworkManager Wi-Fi P2P integration — 2026-10-24
+
+- Integrated NetworkManager `org.freedesktop.NetworkManager.Device.WifiP2P` and `WifiP2PPeer` D-Bus interfaces via `zbus` in `src/p2p.rs`.
+- Implemented automatic discovery of the system's Wi-Fi P2P management device (`p2p-dev-wlo1`), supporting `start_find`, `stop_find`, and type-safe peer enumeration (`P2PPeerInfo`).
+- Added structured parsing for incoming `Medium::WifiDirect` and `Medium::WifiHotspot` credentials in `rqs_lib::bwu`.
+- Verified live D-Bus communication with NetworkManager on Intel Raptor Lake host without interrupting active Wi-Fi or VPN connections.
+
 ## Bandwidth upgrade negotiation and Wi-Fi LAN transfer — 2026-10-24
 
 - Implemented `BandwidthUpgradeRetry` (frame type 12) protobuf wire format and handler in `rqs_lib`, responding to sender upgrade retries with supported mediums (`WifiHotspot`, `WifiDirect`, `WifiLan`) and explaining previously unhandled 10-second upgrade timeouts.

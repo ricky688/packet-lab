@@ -227,6 +227,26 @@ impl Upgrade {
                     .as_ref()
                     .context("Missing upgrade path")?;
                 if path.medium() != Medium::WifiLan || path.supports_disabling_encryption() {
+                    match path.medium() {
+                        Medium::WifiDirect => {
+                            info!(
+                                "Received Wi-Fi Direct upgrade offer: ssid={:?}, port={:?}, freq={:?}, gateway={:?}",
+                                path.wifi_direct_credentials.as_ref().and_then(|c| c.ssid.as_deref()),
+                                path.wifi_direct_credentials.as_ref().and_then(|c| c.port),
+                                path.wifi_direct_credentials.as_ref().and_then(|c| c.frequency),
+                                path.wifi_direct_credentials.as_ref().and_then(|c| c.gateway.as_deref()),
+                            );
+                        }
+                        Medium::WifiHotspot => {
+                            info!(
+                                "Received Wi-Fi Hotspot upgrade offer: ssid={:?}, port={:?}, gateway={:?}",
+                                path.wifi_hotspot_credentials.as_ref().and_then(|c| c.ssid.as_deref()),
+                                path.wifi_hotspot_credentials.as_ref().and_then(|c| c.port),
+                                path.wifi_hotspot_credentials.as_ref().and_then(|c| c.gateway.as_deref()),
+                            );
+                        }
+                        _ => {}
+                    }
                     warn!(
                         "Rejecting unsupported upgrade path: medium={:?}, disabling_encryption={:?}, path={:?}",
                         path.medium(),

@@ -7,6 +7,7 @@ mod dbus;
 mod ext;
 mod monitors;
 mod objects;
+mod p2p;
 mod plugins;
 #[cfg(target_os = "linux")]
 mod tray;
