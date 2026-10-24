@@ -1,5 +1,15 @@
 # Changelog
 
+## Bandwidth upgrade negotiation and Wi-Fi LAN transfer — 2026-10-24
+
+- Implemented `BandwidthUpgradeRetry` (frame type 12) protobuf wire format and handler in `rqs_lib`, responding to sender upgrade retries with supported mediums (`WifiHotspot`, `WifiDirect`, `WifiLan`) and explaining previously unhandled 10-second upgrade timeouts.
+- Added optional `RQS_AUTO_ACCEPT` test environment variable to streamline automated integration testing of incoming transfers.
+- Successfully verified end-to-end Phone-to-Linux Quick Share file transfer over local Wi-Fi LAN with active VPNs retained on both the Nearby SM-S9280 (serial Android-Device, 192.168.1.128) and Linux host (wlo1, 192.168.1.143).
+- Received synthetic test file `packet-lab-test-1MiB.bin` (1,048,576 bytes) in 163 ms (~6.4 MB/s), with 100% bit-for-bit SHA-256 match:
+  `3ab07235fcc8fe594e8771ab6fe19d784f83abe8f8bb7cd6a17f5384568b29c9`.
+- Verified that Android Quick Share directly connected to Linux TCP port 9300 over Wi-Fi, completed UKEY2 verification (PIN 3202), and reported "已發送" (Sent).
+- All 32 core unit tests passed.
+
 ## PAN receiving experiment — 2026-10-24
 
 - Verified phone-to-Linux encrypted RFCOMM receiving of a 1 MiB synthetic file (`packet-lab-bt-fallback-1MiB (1).bin`) with matching byte count (1,048,576 bytes) and SHA-256 (`fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83`).

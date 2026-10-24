@@ -464,7 +464,15 @@ pub fn present_receive_transfer_ui(
                             )),
                     );
 
-                    consent_dialog.present(Some(&win));
+                    let auto_accept = std::env::var("RQS_AUTO_ACCEPT")
+                        .map(|v| v == "1" || v == "true")
+                        .unwrap_or(false);
+                    if auto_accept {
+                        tracing::info!("Auto-accepting transfer due to RQS_AUTO_ACCEPT");
+                        receive_state.set_user_action(Some(UserAction::ConsentAccept));
+                    } else {
+                        consent_dialog.present(Some(&win));
+                    }
 
                     // TODO: show a progress dialog for both but with a delay?
                     // Create Progress bar dialog
