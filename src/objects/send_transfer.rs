@@ -47,6 +47,23 @@ impl ChannelMessage {
             .unwrap_or(gettext("Unknown device"))
     }
 
+    pub fn device_type(&self) -> Option<rqs_lib::DeviceType> {
+        self.msg
+            .as_client_unchecked()
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.source.as_ref())
+            .map(|source| source.device_type.clone())
+    }
+
+    pub fn transport_medium(&self) -> Option<&str> {
+        self.msg
+            .as_client_unchecked()
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.transport_medium.as_deref())
+    }
+
     pub fn files(&self) -> Option<&Vec<String>> {
         self.msg
             .as_client_unchecked()

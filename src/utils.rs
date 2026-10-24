@@ -390,6 +390,39 @@ impl DataTransferEta {
         let eta_secs = remaining / speed;
         HumanReadable(eta_secs).to_string()
     }
+
+    pub fn speed_bps(&self) -> f64 {
+        self.est.steps_per_second(Instant::now())
+    }
+
+    pub fn speed_fmt(&self) -> Option<String> {
+        let speed = self.speed_bps();
+        if speed > 0.0 && speed.is_finite() {
+            Some(format!("{}/s", human_bytes::human_bytes(speed)))
+        } else {
+            None
+        }
+    }
+
+    pub fn progress_summary_fmt(&self) -> String {
+        let eta = formatx::formatx!(gettext("About {} left"), self.eta_fmt())
+            .unwrap_or_else(|_| format!("About {} left", self.eta_fmt()));
+        let progress = if self.total_len > 0 {
+            Some(format!(
+                "{} / {}",
+                human_bytes::human_bytes(self.est.prev_steps as f64),
+                human_bytes::human_bytes(self.total_len as f64)
+            ))
+        } else {
+            None
+        };
+        match (self.speed_fmt(), progress) {
+            (Some(speed), Some(prog)) => format!("{speed} · {prog} · {eta}"),
+            (Some(speed), None) => format!("{speed} · {eta}"),
+            (None, Some(prog)) => format!("{prog} · {eta}"),
+            (None, None) => eta,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -632,3 +665,32 @@ pub fn setup_clickable_links(text_view: &gtk::TextView) -> ClickableLinksCleanup
         }
     ))
 }
+
+pub fn device_type_icon_name(device_type: Option<&rqs_lib::DeviceType>) -> &'static str {
+    match device_type {
+        Some(rqs_lib::DeviceType::Phone) => "phone-symbolic",
+        Some(rqs_lib::DeviceType::Tablet) => "tablet-symbolic",
+        Some(rqs_lib::DeviceType::Laptop) => "computer-symbolic",
+        _ => "phone-symbolic",
+    }
+}
+
+pub fn apply_medium_badge_style(badge: &gtk::Label, medium: &str) {
+    let (label, style_class) = if medium.contains("Direct") && medium.contains("Upgrading") {
+        ("🔄 Upgrading to Wi-Fi Direct…", "medium-upgrading")
+    } else if medium.contains("Upgrading") {
+        ("🔄 Upgrading to Wi-Fi…", "medium-upgrading")
+    } else if medium.contains("Direct") {
+        ("🚀 Wi-Fi Direct", "medium-direct")
+    } else if medium.contains("Hotspot") {
+        ("📡 Wi-Fi Hotspot", "medium-hotspot")
+    } else if medium.contains("Bluetooth") {
+        ("📶 Bluetooth", "medium-bt")
+    } else {
+        ("⚡ Wi-Fi LAN", "medium-lan")
+    };
+    badge.set_label(label);
+    badge.set_css_classes(&["medium-badge", style_class]);
+    badge.set_visible(true);
+}
+

@@ -1060,6 +1060,7 @@ impl InboundRequest {
                 pin_code: self.state.pin_code.clone(),
                 total_bytes,
                 ack_bytes: Default::default(),
+                transport_medium: Default::default(),
             };
 
             info!("Asking for user consent: {:?}", metadata);
@@ -1085,6 +1086,7 @@ impl InboundRequest {
                         payload: Default::default(),
                         total_bytes: Default::default(),
                         ack_bytes: Default::default(),
+                        transport_medium: Default::default(),
                     };
 
                     info!("Asking for user consent: {:?}", metadata);
@@ -1109,6 +1111,7 @@ impl InboundRequest {
                         payload: Default::default(),
                         total_bytes: Default::default(),
                         ack_bytes: Default::default(),
+                        transport_medium: Default::default(),
                     };
 
                     info!("Asking for user consent: {:?}", metadata);
@@ -1142,6 +1145,7 @@ impl InboundRequest {
                 payload: Default::default(),
                 total_bytes: Default::default(),
                 ack_bytes: Default::default(),
+                transport_medium: Default::default(),
             };
 
             self.update_state(
@@ -1530,6 +1534,9 @@ impl InboundRequest {
         F: FnOnce(&mut InnerState),
     {
         f(&mut self.state);
+        if let Some(tmd) = self.state.transfer_metadata.as_mut() {
+            tmd.transport_medium = Some(self.upgrade.medium_label().to_owned());
+        }
 
         if !inform {
             return;

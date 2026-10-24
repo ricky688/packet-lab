@@ -11,3 +11,36 @@
   padding: 6px;
   border: 1px solid var(--border-color);
 }
+
+.medium-badge {
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 9px;
+  letter-spacing: 0.2px;
+}
+
+.medium-lan {
+  background-color: alpha(var(--accent-bg-color), 0.16);
+  color: var(--accent-color);
+}
+
+.medium-direct {
+  background-color: alpha(var(--success-bg-color), 0.18);
+  color: var(--success-color);
+}
+
+.medium-hotspot {
+  background-color: alpha(var(--warning-bg-color), 0.18);
+  color: var(--warning-color);
+}
+
+.medium-bt {
+  background-color: alpha(var(--view-fg-color), 0.1);
+  color: var(--view-fg-color);
+}
+
+.medium-upgrading {
+  background-color: alpha(var(--accent-bg-color), 0.22);
+  color: var(--accent-color);
+}

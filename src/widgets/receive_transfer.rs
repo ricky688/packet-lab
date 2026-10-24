@@ -99,9 +99,20 @@ pub fn present_receive_transfer_ui(
     progress_stack.add_named(&progress_files_box, Some("progress_files"));
 
     let device_name = event.device_name();
-    let device_name_box = create_device_name_box(&device_name);
+    let device_type = event.device_type();
+    let device_name_box = create_device_name_box(&device_name, device_type.as_ref());
     device_name_box.set_margin_bottom(4);
     progress_files_box.append(&device_name_box);
+
+    let progress_medium_badge = gtk::Label::builder()
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+    crate::utils::apply_medium_badge_style(
+        &progress_medium_badge,
+        event.transport_medium().unwrap_or("Wi-Fi LAN"),
+    );
+    progress_files_box.append(&progress_medium_badge);
 
     let progress_bar = gtk::ProgressBar::new();
     progress_files_box.append(&progress_bar);
@@ -119,7 +130,7 @@ pub fn present_receive_transfer_ui(
         .spacing(12)
         .build();
 
-    let device_name_box = create_device_name_box(&device_name);
+    let device_name_box = create_device_name_box(&device_name, device_type.as_ref());
     device_name_box.set_margin_bottom(4);
     progress_text_box.append(&device_name_box);
     progress_text_box.append(&adw::Spinner::new());
@@ -127,7 +138,10 @@ pub fn present_receive_transfer_ui(
 
     progress_dialog.set_extra_child(Some(&progress_stack));
 
-    fn create_device_name_box(device_name: &str) -> gtk::Box {
+    fn create_device_name_box(
+        device_name: &str,
+        device_type: Option<&rqs_lib::DeviceType>,
+    ) -> gtk::Box {
         let device_name_box = gtk::Box::builder()
             .halign(gtk::Align::Center)
             .spacing(8)
@@ -138,6 +152,11 @@ pub fn present_receive_transfer_ui(
             .size(32)
             .build();
         device_name_box.append(&avatar);
+        let type_icon = gtk::Image::builder()
+            .icon_name(crate::utils::device_type_icon_name(device_type))
+            .css_classes(["dim-label"])
+            .build();
+        device_name_box.append(&type_icon);
         let device_label = gtk::Label::builder()
             .label(device_name)
             .halign(gtk::Align::Center)
@@ -258,12 +277,17 @@ pub fn present_receive_transfer_ui(
     receive_state.connect_event_notify(clone!(
         #[weak]
         win,
+        #[weak]
+        progress_medium_badge,
         #[strong]
         notification_id,
         move |receive_state| {
             use rqs_lib::TransferState;
 
             let event_msg = receive_state.event().expect("ReceiveTransferState.event must be set");
+            if let Some(medium) = event_msg.transport_medium() {
+                crate::utils::apply_medium_badge_style(&progress_medium_badge, medium);
+            }
             let client_msg = event_msg.msg.as_client_unchecked();
             let metadata = client_msg.metadata.as_ref();
 
@@ -298,9 +322,20 @@ pub fn present_receive_transfer_ui(
                     consent_dialog.set_extra_child(Some(&info_box));
 
                     let device_name = event_msg.device_name();
+                    let device_type = event_msg.device_type();
 
-                    let device_name_box = create_device_name_box(&device_name);
+                    let device_name_box = create_device_name_box(&device_name, device_type.as_ref());
                     info_box.append(&device_name_box);
+
+                    let consent_medium_badge = gtk::Label::builder()
+                        .halign(gtk::Align::Center)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    crate::utils::apply_medium_badge_style(
+                        &consent_medium_badge,
+                        event_msg.transport_medium().unwrap_or("Wi-Fi LAN"),
+                    );
+                    info_box.append(&consent_medium_badge);
 
                     let transfer_size = metadata
                         .map_or("Unknown".into(), |it| human_bytes::human_bytes(it.total_bytes as f64));
@@ -503,19 +538,11 @@ pub fn present_receive_transfer_ui(
                                 }
                             }
 
-                            formatx!(
-                                gettext(
-                                    // Translators: {} will be replaced with an estimated remaining time string
-                                    // e.g. "About 4 minutes 32 seconds left"
-                                    "About {} left"
-                                ),
-                                receive_state
-                                    .imp()
-                                    .eta
-                                    .borrow()
-                                    .eta_fmt()
-                            )
-                            .unwrap_or_else(|_| "badly formatted locale string".into())
+                            receive_state
+                                .imp()
+                                .eta
+                                .borrow()
+                                .progress_summary_fmt()
                         };
                         eta_label.set_label(&eta_text);
                     }

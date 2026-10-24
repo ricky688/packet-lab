@@ -65,4 +65,5 @@ pub struct TransferMetadata {
 
     pub total_bytes: u64,
     pub ack_bytes: u64,
+    pub transport_medium: Option<String>,
 }

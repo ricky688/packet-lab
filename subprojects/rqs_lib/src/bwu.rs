@@ -257,6 +257,7 @@ pub(crate) struct Upgrade {
     pub context: Option<Context>,
     pub remote: Option<String>,
     pub bluetooth: bool,
+    pub active_medium: Option<Medium>,
     pub lan_failed: bool,
     pub lan_attempted: bool,
     pub direct_failed: bool,
@@ -293,8 +294,29 @@ pub(crate) enum Action {
 }
 
 impl Upgrade {
+    pub fn medium_label(&self) -> &'static str {
+        if self.complete {
+            match self.active_medium {
+                Some(Medium::WifiDirect) => "Wi-Fi Direct",
+                Some(Medium::WifiHotspot) => "Wi-Fi Hotspot",
+                _ => "Wi-Fi LAN",
+            }
+        } else if self.waiting.is_some() || self.last_sent || self.next.is_some() {
+            match self.active_medium {
+                Some(Medium::WifiDirect) => "Upgrading to Wi-Fi Direct…",
+                Some(Medium::WifiHotspot) => "Upgrading to Hotspot…",
+                _ => "Upgrading to Wi-Fi…",
+            }
+        } else if self.bluetooth {
+            "Bluetooth"
+        } else {
+            "Wi-Fi LAN"
+        }
+    }
+
     fn retain_bluetooth(&mut self, path: &bwu::UpgradePathInfo) -> Action {
         self.lan_failed = true;
+        self.active_medium = Some(Medium::Bluetooth);
         self.deadline = None;
         let mut failure = event(EventType::UpgradeFailure);
         failure
@@ -328,6 +350,7 @@ impl Upgrade {
                 pending.insert(remote, tx);
                 drop(pending);
                 self.waiting = Some(rx);
+                self.active_medium = Some(Medium::WifiLan);
                 self.deadline = Some(tokio::time::Instant::now() + DEADLINE);
                 let mut frame = event(EventType::UpgradePathAvailable);
                 frame
@@ -372,6 +395,7 @@ impl Upgrade {
                 pending.insert(remote, tx);
                 drop(pending);
                 self.waiting = Some(rx);
+                self.active_medium = Some(Medium::WifiDirect);
                 self.deadline = Some(tokio::time::Instant::now() + DEADLINE);
                 self.direct_offered = Some(direct.clone());
                 let mut frame = event(EventType::UpgradePathAvailable);
@@ -531,6 +555,7 @@ impl Upgrade {
                         bail!("Invalid upgrade ACK");
                     }
                 }
+                self.active_medium = Some(path.medium());
                 self.next = Some(socket);
                 self.last_sent = true;
                 Ok(Action::Send(vec![event(
@@ -604,6 +629,7 @@ impl Upgrade {
                             return Ok(Action::Send(vec![direct_offer_frame]));
                         }
                         self.lan_failed = true;
+                        self.active_medium = Some(Medium::Bluetooth);
                         warn!("Peer rejected LAN upgrade; retaining encrypted Bluetooth transport");
                         Ok(Action::Send(Vec::new()))
                     }
@@ -633,6 +659,7 @@ impl Upgrade {
                         self.direct_offered = None;
                         self.direct_failed = true;
                         self.lan_failed = true;
+                        self.active_medium = Some(Medium::Bluetooth);
                         warn!(
                             "Peer rejected Wi-Fi Direct upgrade; retaining encrypted Bluetooth transport"
                         );
@@ -1162,5 +1189,18 @@ mod tests {
         assert!(upgrade2.direct_failed && upgrade2.lan_failed);
         assert!(upgrade2.waiting.is_none() && upgrade2.deadline.is_none());
         assert!(context_no_lan.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn transport_medium_label_tracks_upgrade_lifecycle() {
+        let mut upgrade = Upgrade::default();
+        assert_eq!(upgrade.medium_label(), "Wi-Fi LAN");
+        upgrade.bluetooth = true;
+        assert_eq!(upgrade.medium_label(), "Bluetooth");
+        upgrade.active_medium = Some(Medium::WifiDirect);
+        upgrade.last_sent = true;
+        assert_eq!(upgrade.medium_label(), "Upgrading to Wi-Fi Direct…");
+        upgrade.complete = true;
+        assert_eq!(upgrade.medium_label(), "Wi-Fi Direct");
     }
 }

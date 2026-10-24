@@ -309,6 +309,24 @@ impl Application {
 
         imp.start_in_background
             .replace(options.contains("background"));
+
+        if let Ok(Some(files)) = options.lookup::<Vec<std::path::PathBuf>>("send") {
+            let paths = files
+                .into_iter()
+                .map(|p| {
+                    std::fs::canonicalize(&p)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>();
+            if !paths.is_empty() {
+                let tx = imp.send_files_channel.0.clone();
+                glib::spawn_future_local(async move {
+                    let _ = tx.send(paths).await;
+                });
+            }
+        }
     }
 
     fn setup_command_line_options(&self) {
@@ -319,6 +337,14 @@ impl Application {
             glib::OptionArg::None,
             "Start the application in background",
             None,
+        );
+        self.add_main_option(
+            "send",
+            b's'.into(),
+            glib::OptionFlags::NONE,
+            glib::OptionArg::FilenameArray,
+            "Send one or more files directly",
+            Some("FILE..."),
         );
     }
 

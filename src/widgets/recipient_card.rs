@@ -229,6 +229,18 @@ pub fn create_recipient_card(
         .build();
     right_box.append(&main_box);
 
+    let title_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .spacing(6)
+        .build();
+    let device_type_icon = gtk::Image::builder()
+        .icon_name(crate::utils::device_type_icon_name(
+            model_item.endpoint_info().rtype.as_ref(),
+        ))
+        .css_classes(["dim-label"])
+        .build();
     let title_label = gtk::Label::builder()
         .halign(gtk::Align::Start)
         .wrap(true)
@@ -239,6 +251,20 @@ pub fn create_recipient_card(
         .bind_property("device-name", &title_label, "label")
         .sync_create()
         .build();
+    let medium_badge = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .build();
+    let initial_medium = if model_item.endpoint_info().id.starts_with("bluetooth://") {
+        "Bluetooth"
+    } else {
+        "Wi-Fi LAN"
+    };
+    crate::utils::apply_medium_badge_style(&medium_badge, initial_medium);
+    title_row.append(&device_type_icon);
+    title_row.append(&title_label);
+    title_row.append(&medium_badge);
+
     let result_label = gtk::Label::builder()
         .halign(gtk::Align::Start)
         .wrap(true)
@@ -257,7 +283,7 @@ pub fn create_recipient_card(
         .visible(false)
         .css_classes(["dimmed", "monospace"])
         .build();
-    main_box.append(&title_label);
+    main_box.append(&title_row);
     if let Some(address) = model_item.endpoint_info().id.strip_prefix("bluetooth://") {
         main_box.append(
             &gtk::Label::builder()
@@ -402,6 +428,8 @@ pub fn create_recipient_card(
         retry_button,
         #[weak]
         unavailability_label,
+        #[weak]
+        device_type_icon,
         move |model_item| {
             let imp = win.imp();
             let is_idle_card = model_item.transfer_state() == TransferState::AwaitingConsentOrIdle;
@@ -414,6 +442,9 @@ pub fn create_recipient_card(
             };
 
             let endpoint_info = model_item.endpoint_info();
+            device_type_icon.set_icon_name(Some(crate::utils::device_type_icon_name(
+                endpoint_info.rtype.as_ref(),
+            )));
             if endpoint_info.present.is_none() {
                 retry_button.set_sensitive(false);
                 unavailability_label.set_visible(is_idle_card);
@@ -434,12 +465,17 @@ pub fn create_recipient_card(
     model_item.connect_event_notify(clone!(
         #[weak]
         imp,
+        #[weak]
+        medium_badge,
         move |model_item| {
             use rqs_lib::TransferState as RqsState;
 
             let eta_estimator = model_item.imp().eta.as_ref();
 
             if let Some(event_msg) = model_item.event() {
+                if let Some(medium) = event_msg.transport_medium() {
+                    crate::utils::apply_medium_badge_style(&medium_badge, medium);
+                }
                 let client_msg = event_msg.msg.as_client_unchecked();
                 let state = client_msg.state.as_ref().unwrap_or(&RqsState::Initial);
 
@@ -506,8 +542,7 @@ pub fn create_recipient_card(
                                 eta_estimator.borrow_mut().step_with(metadata.ack_bytes);
                             }
 
-                            formatx!(gettext("About {} left"), eta_estimator.borrow().eta_fmt())
-                                .unwrap_or_else(|_| "badly formatted locale string".into())
+                            eta_estimator.borrow().progress_summary_fmt()
                         };
                         eta_label.set_visible(true);
                         eta_label.set_label(&eta_text);
