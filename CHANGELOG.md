@@ -1,5 +1,9 @@
 # Changelog
 
+## Discovery cleanup — 2026-10-24
+
+- Stop the previous discovery session on refresh and shut down its mDNS daemon.
+
 ## Retry reliability — 2026-10-24
 
 - Prevent duplicate sends and retries from falsely failing an active recipient.

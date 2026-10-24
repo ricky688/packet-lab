@@ -40,6 +40,19 @@ impl MDnsDiscovery {
     }
 
     pub async fn run(self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
+        let result = self.browse(ctk).await;
+        match self.daemon.shutdown() {
+            Ok(stopped) => {
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), stopped.recv_async())
+                        .await;
+            }
+            Err(error) => warn!("MDnsDiscovery: shutdown failed: {error}"),
+        }
+        result
+    }
+
+    async fn browse(&self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
         info!("MDnsDiscovery: service starting");
 
         let service_type = "_FC9F5ED42C8A._tcp.local.";
@@ -135,5 +148,27 @@ impl MDnsDiscovery {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_discovery_stops_its_daemon() {
+        let (sender, _) = broadcast::channel(4);
+        let discovery = MDnsDiscovery::new(sender).unwrap();
+        let daemon = discovery.daemon.clone();
+        let token = CancellationToken::new();
+        token.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(3), discovery.run(token))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            daemon.status().unwrap().recv_async().await.unwrap(),
+            mdns_sd::DaemonStatus::Shutdown
+        );
     }
 }
