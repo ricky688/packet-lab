@@ -4,6 +4,18 @@ use zbus::zvariant::OwnedObjectPath;
 
 const BLUEZ_ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 
+pub async fn bluez_restarts(
+    conn: &zbus::Connection,
+) -> zbus::Result<impl futures_lite::Stream<Item = ()> + 'static> {
+    let bus = zbus::fdo::DBusProxy::new(conn).await?;
+    let changes = bus.receive_name_owner_changed_with_args(&[(0, "org.bluez")]).await?;
+    Ok(changes.filter_map(|change| {
+        let args = change.args().ok()?;
+        args.new_owner().as_ref()?;
+        Some(())
+    }))
+}
+
 /// Finds the object path of a Bluetooth adapter (e.g. `/org/bluez/hci0`) by asking BlueZ
 /// for its managed objects, rather than assuming `hci0` always exists: some systems only
 /// expose `hci1` or other indices.
@@ -108,4 +120,44 @@ pub async fn is_bluetooth_powered(conn: &zbus::Connection) -> zbus::Result<bool>
     let value: bool = proxy.get_property("Powered").await?;
 
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufRead;
+    use std::process::{Child, Command, Stdio};
+    use std::time::Duration;
+
+    struct TestBus(Child);
+    impl Drop for TestBus {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_replacement_emits_recovery_without_a_power_change() {
+        let mut daemon = TestBus(Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(Stdio::piped()).spawn().unwrap());
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.0.stdout.take().unwrap())
+            .read_line(&mut address).unwrap();
+        let observer = zbus::connection::Builder::address(address.trim()).unwrap()
+            .build().await.unwrap();
+        let first = zbus::connection::Builder::address(address.trim()).unwrap()
+            .build().await.unwrap();
+        first.request_name("org.bluez").await.unwrap();
+        let mut restarts = bluez_restarts(&observer).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(20), restarts.next()).await.is_err());
+        first.close().await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(20), restarts.next()).await.is_err());
+        let replacement = zbus::connection::Builder::address(address.trim()).unwrap()
+            .build().await.unwrap();
+        replacement.request_name("org.bluez").await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), restarts.next())
+            .await.unwrap().is_some());
+    }
 }

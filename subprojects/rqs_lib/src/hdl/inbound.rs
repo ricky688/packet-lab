@@ -97,7 +97,14 @@ impl InboundRequest {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
                     None => std::future::pending::<()>().await,
                 }
-            } => return Err(anyhow!("Wi-Fi handover timed out")),
+            } => {
+                if let Some(offer) = self.upgrade.on_deadline_expired().await? {
+                    self.encrypt_and_send(&offer).await?;
+                } else if std::mem::take(&mut self.deferred_consent) {
+                    self.accept_transfer().await?;
+                }
+                return Ok(());
+            },
             i = self.receiver.recv() => {
                 match i {
                     Ok(channel_msg) => {
@@ -110,7 +117,7 @@ impl InboundRequest {
                             match action {
                                 TransferAction::ConsentAccept => {
                                     if self.upgrade.bluetooth && !self.upgrade.complete {
-                                        if let Some(offer) = self.upgrade.offer()? {
+                                        if let Some(offer) = self.upgrade.offer().await? {
                                             self.deferred_consent = true;
                                             self.encrypt_and_send(&offer).await?;
                                         } else { self.accept_transfer().await?; }
@@ -151,13 +158,13 @@ impl InboundRequest {
             first = self.socket.read(&mut length_buf[..1]) => {
                 if first? == 0 { return Err(anyhow!("Peer closed the incoming session")); }
                 let read_frame = async {
-                    stream_read_exact(&mut self.socket, &mut length_buf[1..]).await?;
-                    self._handle(length_buf).await
+                    stream_read_exact(&mut self.socket, &mut length_buf[1..]).await
                 };
                 if let Some(deadline) = upgrade_deadline {
                     tokio::time::timeout_at(deadline, read_frame).await
                         .map_err(|_| anyhow!("Wi-Fi handover timed out"))??;
                 } else { read_frame.await?; }
+                self._handle(length_buf).await?;
             }
         }
 
@@ -174,7 +181,11 @@ impl InboundRequest {
 
         // Allocate buffer for the actual message and read it
         let mut frame_data = vec![0u8; msg_length];
-        stream_read_exact(&mut self.socket, &mut frame_data).await?;
+        let read = stream_read_exact(&mut self.socket, &mut frame_data);
+        if let Some(deadline) = self.upgrade.deadline {
+            tokio::time::timeout_at(deadline, read).await
+                .map_err(|_| anyhow!("Wi-Fi handover timed out"))??;
+        } else { read.await?; }
 
         let current_state = &self.state;
         // Now determine what will be the request type based on current state
@@ -248,6 +259,10 @@ impl InboundRequest {
                 .await;
             }
             _ => {
+                if self.upgrade.uses_link_encryption() {
+                    let frame = OfflineFrame::decode(frame_data.as_slice())?;
+                    return self.process_offline_frame(&frame).await;
+                }
                 debug!("Handling SecureMessage frame");
                 let smsg = SecureMessage::decode(&*frame_data)?;
                 self.decrypt_and_process_secure_message(&smsg).await?;
@@ -540,6 +555,10 @@ impl InboundRequest {
         }
 
         let offline = location_nearby_connections::OfflineFrame::decode(d2d_msg.message())?;
+        self.process_offline_frame(&offline).await
+    }
+
+    async fn process_offline_frame(&mut self, offline: &OfflineFrame) -> Result<(), anyhow::Error> {
         let v1_frame = offline
             .v1
             .as_ref()
@@ -785,6 +804,7 @@ impl InboundRequest {
                         } else if (chunk.flags() & 1) == 1 {
                             self.state.transferred_files.remove(&payload_id);
                             if self.state.transferred_files.is_empty() {
+                                self.disconnection().await?;
                                 info!("Transfer finished");
                                 self.update_state(
                                     |e| {
@@ -793,7 +813,6 @@ impl InboundRequest {
                                     true,
                                 )
                                 .await;
-                                self.disconnection().await?;
                                 return Err(anyhow!(crate::errors::AppError::NotAnError));
                             }
                         }
@@ -864,7 +883,7 @@ impl InboundRequest {
                 && self.upgrade.context.is_some()
                 && self.upgrade.remote.is_some()
             {
-                if let Some(offer) = self.upgrade.offer()? {
+                if let Some(offer) = self.upgrade.offer().await? {
                     self.encrypt_and_send(&offer).await?;
                 }
             }
@@ -986,6 +1005,11 @@ impl InboundRequest {
             false,
         )
         .await;
+        if self.upgrade.bluetooth {
+            if let Some(context) = &self.upgrade.context {
+                crate::bwu::spawn_host_preparation(context.port);
+            }
+        }
 
         if !introduction.file_metadata.is_empty() && introduction.text_metadata.is_empty() {
             trace!("process_introduction: handling file_metadata");
@@ -1423,6 +1447,10 @@ impl InboundRequest {
             return Ok(());
         }
 
+        if self.upgrade.uses_link_encryption() {
+            return self.send_frame(frame.encode_to_vec()).await;
+        }
+
         let d2d_msg = DeviceToDeviceMessage {
             sequence_number: Some(self.get_server_seq_inc().await),
             message: Some(frame.encode_to_vec()),
@@ -1562,7 +1590,39 @@ impl InboundRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::upgrade_path_info::Medium;
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn negotiated_direct_link_reads_and_replies_without_ukey2_wrapping() {
+        let (socket, mut peer) = tokio::io::duplex(2048);
+        let (events, _) = tokio::sync::broadcast::channel(10);
+        let mut request = InboundRequest::new(socket, "phone".into(), events);
+        request.state.state = TransferState::ReceivingFiles;
+        request.upgrade.bluetooth = true;
+        request.upgrade.active_medium = Some(Medium::WifiDirect);
+        request.upgrade.link_encryption = true;
+        request.upgrade.complete = true;
+        let frame = OfflineFrame {
+            version: Some(1),
+            v1: Some(location_nearby_connections::V1Frame {
+                r#type: Some(location_nearby_connections::v1_frame::FrameType::KeepAlive.into()),
+                keep_alive: Some(Default::default()),
+                ..Default::default()
+            }),
+        };
+        let bytes = frame.encode_to_vec();
+        peer.write_u32(bytes.len() as u32).await.unwrap();
+        peer.write_all(&bytes).await.unwrap();
+        request.handle().await.unwrap();
+        let size = peer.read_u32().await.unwrap();
+        let mut reply = vec![0; size as usize];
+        peer.read_exact(&mut reply).await.unwrap();
+        let reply = OfflineFrame::decode(reply.as_slice()).unwrap();
+        assert!(reply.v1.unwrap().keep_alive.unwrap().ack());
+        assert_eq!(request.state.client_seq, 0);
+        assert_eq!(request.state.server_seq, 0);
+    }
 
     #[tokio::test]
     async fn bluetooth_without_lan_accepts_without_deferring_consent() {

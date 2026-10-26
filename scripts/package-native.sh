@@ -18,6 +18,11 @@ mkdir -p "$bundle/bin" "$bundle/share/packet-lab" "$bundle/share/glib-2.0/schema
     "$bundle/share/icons/hicolor/scalable/apps" "$bundle/licenses"
 install -m 755 "$target_dir/release/packet-lab" "$bundle/bin/packet-lab"
 strip --strip-unneeded "$bundle/bin/packet-lab"
+install -m 644 scripts/wifi-ap-helper.py "$bundle/share/packet-lab/wifi-ap-helper.py"
+install -m 644 scripts/wifi-p2p-client-helper.py "$bundle/share/packet-lab/wifi-p2p-client-helper.py"
+install -m 644 scripts/install-network-helper.py "$bundle/share/packet-lab/install-network-helper.py"
+install -m 644 data/io.github.ricky688.PacketLab.network.policy "$bundle/share/packet-lab/io.github.ricky688.PacketLab.network.policy"
+install -m 755 scripts/bluez-suppress-reverse-gatt.py "$bundle/share/packet-lab/bluez-suppress-reverse-gatt.py"
 install -m 755 scripts/bundle-launcher.sh "$bundle/packet-lab"
 install -m 755 scripts/packet-lab-send "$bundle/packet-lab-send"
 install -m 644 _build/data/resources/resources.gresource _build/src/ui-resources.gresource "$bundle/share/packet-lab/"
@@ -26,6 +31,8 @@ install -m 644 data/icons/io.github.ricky688.PacketLab.svg "$bundle/share/icons/
 install -m 644 LICENSE "$bundle/licenses/Packet-GPL-3.0.txt"
 install -m 644 subprojects/rqs_lib/LICENSE "$bundle/licenses/rquickshare-GPL-3.0.txt"
 install -m 644 README.md UPSTREAM.md CHANGELOG.md "$bundle/"
+mkdir -p "$bundle/docs"
+install -m 644 docs/HOTSPOT-HANDOVER.md "$bundle/docs/"
 {
     printf 'Packet Lab %s\nArchitecture: %s\n' "$version" "$architecture"
     printf '\nBuild environment:\n'

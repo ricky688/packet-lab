@@ -2343,6 +2343,28 @@ impl Window {
                     conn.unwrap()
                 };
 
+                let restart_conn = conn.clone();
+                glib::spawn_future_local(clone!(
+                    #[weak]
+                    this,
+                    async move {
+                        let result: anyhow::Result<()> = async {
+                            let mut restarts = monitors::bluez_restarts(&restart_conn).await?;
+                            while restarts.next().await.is_some() {
+                                // A new daemon has lost all application-owned profiles and advertisements.
+                                glib::timeout_future_seconds(2).await;
+                                tracing::warn!("BlueZ restarted; rebuilding Nearby Bluetooth registrations");
+                                this.restart_rqs_service().await
+                                    .map_err(|error| anyhow!("Restarting Nearby failed: {error:?}"))?;
+                            }
+                            Ok(())
+                        }.await;
+                        if let Err(error) = result {
+                            tracing::error!("BlueZ restart monitor stopped: {error:#}");
+                        }
+                    }
+                ));
+
                 let bluetooth_initial_state = monitors::is_bluetooth_powered(&conn)
                     .await
                     .map_err(|err| {

@@ -7,11 +7,11 @@ use crate::{
 use anyhow::{Context, anyhow, bail};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bluer::{
-    AdapterEvent, Address,
+    AdapterEvent, Address, AddressType,
     rfcomm::{Profile, Stream},
 };
 use futures::{StreamExt, pin_mut};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::{Uuid, uuid};
@@ -20,6 +20,8 @@ use uuid::{Uuid, uuid};
 const SERVICE_UUID: Uuid = uuid!("a82efa21-ae5c-3dde-9bbc-f16da7b16c5a");
 const FEF3_SERVICE_UUID: Uuid = uuid!("0000fef3-0000-1000-8000-00805f9b34fb");
 const SERVICE_HASH: [u8; 3] = [0xfc, 0x9f, 0x5e];
+const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) struct Connect {
     pub address: Address,
@@ -88,20 +90,25 @@ fn parse_receiving_payload(
     Ok((endpoint, kind, name, classic_address))
 }
 
+fn is_fef3_gatt_slot_header(data: &[u8]) -> bool {
+    // Nearby v2 BLE GATT slot header:
+    // byte 0: version 2 (0b0100_0000), bit 3 = 0 (regular GATT slot header, not 0x4a fast adv),
+    // bits 0..=2 = slot count (1..=7).
+    // Followed by 10-byte bloom filter + 4 bytes per slot hash + 2-byte PSM/reserved = 13 + 4 * slots.
+    if data.len() < 17 || (data[0] & 0xe8) != 0x40 {
+        return false;
+    }
+    let slots = usize::from(data[0] & 0x07);
+    slots >= 1 && data.len() == 13 + 4 * slots
+}
+
 async fn resolve_ble_fef3_device(
     device: &bluer::Device,
     address: Address,
 ) -> anyhow::Result<Option<([u8; 4], DeviceType, String, Address)>> {
     let service_data = device.service_data().await?.unwrap_or_default();
-    let has_fef3_uuid = device
-        .uuids()
-        .await?
-        .is_some_and(|ids| ids.contains(&FEF3_SERVICE_UUID));
     let Some(data) = service_data.get(&FEF3_SERVICE_UUID) else {
-        if !has_fef3_uuid {
-            return Ok(None);
-        }
-        return read_fef3_gatt_slots(device, address).await;
+        return Ok(None);
     };
 
     // 1. Try direct parsing (BLE 5.0 Extended Advertisement carries the full payload in ServiceData).
@@ -110,7 +117,7 @@ async fn resolve_ble_fef3_device(
     }
 
     // 2. Regular BLE advertisement header (Version 2 Bloom-filter + slot hashes): read GATT slots on 0xFEF3.
-    if data.len() >= 11 && (data[0] & 0xe0) == 0x40 {
+    if is_fef3_gatt_slot_header(data) {
         return read_fef3_gatt_slots(device, address).await;
     }
 
@@ -121,31 +128,47 @@ async fn read_fef3_gatt_slots(
     device: &bluer::Device,
     address: Address,
 ) -> anyhow::Result<Option<([u8; 4], DeviceType, String, Address)>> {
+    let was_connected = device.is_connected().await.unwrap_or(false);
     let attempt = async {
-        if !device.is_connected().await.unwrap_or(false) {
+        if !was_connected {
             let _ = device.connect().await;
         }
-        for service in device.services().await? {
+        for _ in 0..25 {
+            if device.is_services_resolved().await.unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let Ok(services) = device.services().await else {
+            return Ok(None);
+        };
+        for service in services {
             if service.uuid().await.ok() != Some(FEF3_SERVICE_UUID) {
                 continue;
             }
-            for ch in service.characteristics().await? {
-                if let Ok(bytes) = ch.read().await {
-                    if let Ok(parsed) = parse_receiving_payload(&bytes, address) {
-                        return Ok::<_, anyhow::Error>(Some(parsed));
+            if let Ok(characteristics) = service.characteristics().await {
+                for ch in characteristics {
+                    if let Ok(bytes) = ch.read().await {
+                        if let Ok(parsed) = parse_receiving_payload(&bytes, address) {
+                            return Ok::<_, anyhow::Error>(Some(parsed));
+                        }
                     }
                 }
             }
         }
         Ok(None)
     };
-    match tokio::time::timeout(Duration::from_secs(4), attempt).await {
+    let out = match tokio::time::timeout(Duration::from_secs(6), attempt).await {
         Ok(res) => res,
         Err(_) => {
             debug!("BLE FEF3 GATT slot read timed out for {address}");
             Ok(None)
         }
+    };
+    if !was_connected {
+        let _ = device.disconnect().await;
     }
+    out
 }
 
 pub(crate) async fn discover(
@@ -157,6 +180,7 @@ pub(crate) async fn discover(
     let events = adapter.discover_devices_with_changes().await?;
     pin_mut!(events);
     let mut known = HashMap::new();
+    let probing = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     loop {
         let event = tokio::select! {
             _ = ctk.cancelled() => break,
@@ -164,53 +188,115 @@ pub(crate) async fn discover(
         };
         match event {
             AdapterEvent::DeviceAdded(address) => {
-                let result: anyhow::Result<()> = async {
-                    let device = adapter.device(address)?;
-                    let display = device.name().await?;
-                    let parsed = display.as_deref().and_then(|d| parse_name(d).ok());
-                    // Some Android builds retain their normal Bluetooth name but expose Nearby's SDP UUID.
-                    let nearby_service = device.class().await?.is_some()
-                        && device
-                            .uuids()
-                            .await?
-                            .is_some_and(|ids| ids.contains(&SERVICE_UUID));
-                    if parsed.is_some() || nearby_service {
-                        let (endpoint, kind, name) = parsed
-                            .map(|(id, kind, name)| {
-                                (String::from_utf8_lossy(&id).into_owned(), kind, name)
-                            })
-                            .unwrap_or_else(|| {
-                                (
-                                    String::new(),
-                                    DeviceType::Unknown,
-                                    display.unwrap_or_else(|| address.to_string()),
-                                )
-                            });
-                        let id = format!("bluetooth://{address}");
-                        let info = EndpointInfo {
-                            fullname: endpoint,
-                            id: id.clone(),
-                            name: Some(name),
-                            ip: Some(id),
-                            port: None,
-                            rtype: Some(kind),
-                            present: Some(true),
-                        };
-                        if known
-                            .get(&address)
-                            .and_then(|p: &EndpointInfo| p.name.as_ref())
-                            != info.name.as_ref()
-                        {
-                            info!(
-                                "Bluetooth Nearby endpoint {} ({address})",
-                                info.name.as_deref().unwrap_or("Unknown")
-                            );
-                            let _ = sender.send(info.clone());
-                        }
-                        known.insert(address, info);
-                    } else if let Some((id_bytes, kind, name, classic_mac)) =
-                        resolve_ble_fef3_device(&device, address).await?
+                let adapter = adapter.clone();
+                let sender = sender.clone();
+                let probing = probing.clone();
+                let Ok(device) = adapter.device(address) else {
+                    continue;
+                };
+                let display = device.name().await.ok().flatten();
+                let parsed = display.as_deref().and_then(|d| parse_name(d).ok());
+                let nearby_service = device
+                    .class()
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    && device
+                        .uuids()
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|ids| ids.contains(&SERVICE_UUID));
+
+                if parsed.is_some() || nearby_service {
+                    let (endpoint, kind, name) = parsed
+                        .map(|(id, kind, name)| {
+                            (String::from_utf8_lossy(&id).into_owned(), kind, name)
+                        })
+                        .unwrap_or_else(|| {
+                            (
+                                String::new(),
+                                DeviceType::Unknown,
+                                display.unwrap_or_else(|| address.to_string()),
+                            )
+                        });
+                    let id = format!("bluetooth://{address}");
+                    let info = EndpointInfo {
+                        fullname: endpoint,
+                        id: id.clone(),
+                        name: Some(name),
+                        ip: Some(id),
+                        port: None,
+                        rtype: Some(kind),
+                        present: Some(true),
+                    };
+                    if known
+                        .get(&address)
+                        .and_then(|p: &EndpointInfo| p.name.as_ref())
+                        != info.name.as_ref()
                     {
+                        info!(
+                            "Bluetooth Nearby endpoint {} ({address})",
+                            info.name.as_deref().unwrap_or("Unknown")
+                        );
+                        let _ = sender.send(info.clone());
+                    }
+                    known.insert(address, info);
+                    continue;
+                }
+
+                // Check for BLE FEF3 Nearby advertisement
+                let service_data = device.service_data().await.ok().flatten().unwrap_or_default();
+                let Some(data) = service_data.get(&FEF3_SERVICE_UUID) else {
+                    continue;
+                };
+
+                // 1. Immediate decode if service_data already contains the full payload (BLE 5.0 extended adv)
+                if let Ok((id_bytes, kind, name, classic_mac)) = parse_receiving_payload(data, address) {
+                    let endpoint = String::from_utf8_lossy(&id_bytes).into_owned();
+                    let id = format!("bluetooth://{classic_mac}");
+                    let info = EndpointInfo {
+                        fullname: endpoint,
+                        id: id.clone(),
+                        name: Some(name),
+                        ip: Some(id),
+                        port: None,
+                        rtype: Some(kind),
+                        present: Some(true),
+                    };
+                    if known
+                        .get(&address)
+                        .and_then(|p: &EndpointInfo| p.name.as_ref())
+                        != info.name.as_ref()
+                    {
+                        info!(
+                            "BLE FEF3 Nearby endpoint {} (BLE {address} -> Classic {classic_mac})",
+                            info.name.as_deref().unwrap_or("Unknown")
+                        );
+                        let _ = sender.send(info.clone());
+                    }
+                    known.insert(address, info);
+                    continue;
+                }
+
+                if !is_fef3_gatt_slot_header(data) {
+                    continue;
+                }
+
+                // 2. Spawn GATT slot reader asynchronously so events.next() is NEVER blocked!
+                {
+                    let mut lock = probing.lock().unwrap();
+                    if lock.contains(&address) {
+                        continue;
+                    }
+                    lock.insert(address);
+                }
+
+                tokio::spawn(async move {
+                    let res = resolve_ble_fef3_device(&device, address).await;
+                    probing.lock().unwrap().remove(&address);
+                    if let Ok(Some((id_bytes, kind, name, classic_mac))) = res {
                         let endpoint = String::from_utf8_lossy(&id_bytes).into_owned();
                         let id = format!("bluetooth://{classic_mac}");
                         let info = EndpointInfo {
@@ -222,30 +308,20 @@ pub(crate) async fn discover(
                             rtype: Some(kind),
                             present: Some(true),
                         };
-                        if known
-                            .get(&address)
-                            .and_then(|p: &EndpointInfo| p.name.as_ref())
-                            != info.name.as_ref()
-                        {
-                            info!(
-                                "BLE FEF3 Nearby endpoint {} (BLE {address} -> Classic {classic_mac})",
-                                info.name.as_deref().unwrap_or("Unknown")
-                            );
-                            let _ = sender.send(info.clone());
-                        }
-                        known.insert(address, info);
+                        info!(
+                            "BLE FEF3 Nearby endpoint {} (BLE {address} -> Classic {classic_mac})",
+                            info.name.as_deref().unwrap_or("Unknown")
+                        );
+                        let _ = sender.send(info);
                     }
-                    Ok(())
-                }
-                .await;
-                if let Err(error) = result {
-                    debug!("Skipping unavailable Bluetooth device {address}: {error}");
-                }
+                });
             }
             AdapterEvent::DeviceRemoved(address) => {
                 if let Some(mut info) = known.remove(&address) {
-                    info.present = Some(false);
-                    let _ = sender.send(info);
+                    if info.id == format!("bluetooth://{address}") {
+                        info.present = Some(false);
+                        let _ = sender.send(info);
+                    }
                 }
             }
             _ => {}
@@ -282,12 +358,14 @@ async fn advertise_receiving(
 ) -> anyhow::Result<(
     bluer::gatt::local::ApplicationHandle,
     bluer::adv::AdvertisementHandle,
+    Option<bluer::adv::AdvertisementHandle>,
 )> {
     use bluer::gatt::local::{Application, Characteristic, CharacteristicRead, ReqError, Service};
     use futures::FutureExt;
     use sha2::{Digest, Sha256};
     let service = uuid!("0000fef3-0000-1000-8000-00805f9b34fb");
     let payload = receiving_payload(endpoint, info, adapter.address().await?)?;
+    let ext_payload = payload.clone();
     let mut header = vec![0x41]; // Version 2, no extended advertisement, one GATT slot.
     // MurmurHash3_x64_128("NearbySharing", seed=0), five hashes, 80-bit bloom filter.
     header.extend_from_slice(&[0x20, 0, 0, 0x10, 2, 0, 0, 3, 0, 0]);
@@ -325,8 +403,22 @@ async fn advertise_receiving(
             ..Default::default()
         })
         .await?;
-    info!("Nearby receiving BLE/GATT advertisement active");
-    Ok((app, advertisement))
+    let ext_advertisement = adapter
+        .advertise(bluer::adv::Advertisement {
+            advertisement_type: bluer::adv::Type::Broadcast,
+            service_data: [(service, ext_payload)].into(),
+            secondary_channel: Some(bluer::adv::SecondaryChannel::OneM),
+            min_interval: Some(Duration::from_millis(100)),
+            max_interval: Some(Duration::from_millis(250)),
+            ..Default::default()
+        })
+        .await
+        .ok();
+    info!(
+        "Nearby receiving BLE advertisement active (extended_adv={})",
+        ext_advertisement.is_some()
+    );
+    Ok((app, advertisement, ext_advertisement))
 }
 
 pub(crate) async fn run(
@@ -348,7 +440,7 @@ pub(crate) async fn run(
         .register_profile(Profile {
             uuid: SERVICE_UUID,
             name: Some("NearbySharing".into()),
-            channel: Some(0), // Custom BlueZ UUIDs need an explicit auto-allocated RFCOMM listener.
+            channel: Some(27), // Android caches SDP channels; keep Nearby stable across restarts.
             require_authentication: Some(false),
             require_authorization: Some(false),
             ..Default::default()
@@ -379,18 +471,46 @@ pub(crate) async fn run(
                         let _ = request.reply.send(Err(anyhow!("Bluetooth connection already pending")));
                         continue;
                     }
-                    let device = adapter.device(request.address)?;
+                    let target = request.address;
                     pending.insert(request.address, request.reply);
+                    let adapter_clone = adapter.clone();
                     attempts.spawn(async move {
-                        let result = tokio::time::timeout(Duration::from_secs(12), device.connect_profile(&SERVICE_UUID))
-                            .await.context("Bluetooth connection timed out")
-                            .and_then(|result| result.map_err(anyhow::Error::from));
-                        (request.address, result)
+                        // BlueZ resolves the advertised service's channel via SDP; Android channels vary.
+                        let result = async {
+                            info!("Resolving Nearby RFCOMM service {SERVICE_UUID} on {target}");
+                            tokio::time::timeout(SERVICE_CONNECT_TIMEOUT, async {
+                                // A BLE advertisement can name a Classic address BlueZ has never discovered.
+                                let device = if adapter_clone.device_addresses().await?.contains(&target) {
+                                    adapter_clone.device(target)?
+                                } else {
+                                    info!("Creating Classic Bluetooth device object for advertised address {target}");
+                                    let device = adapter_clone.connect_device(target, AddressType::BrEdr).await?;
+                                    while !device.is_services_resolved().await? {
+                                        tokio::time::sleep(Duration::from_millis(100)).await;
+                                    }
+                                    device
+                                };
+                                device.connect_profile(&SERVICE_UUID).await
+                            })
+                                .await.context("Nearby service connection timed out")?
+                                .with_context(|| format!("Nearby service on {target} is not accepting connections"))?;
+                            Ok::<_, anyhow::Error>(())
+                        }.await;
+                        (target, result)
                     });
                 }
                 Some(done) = attempts.join_next() => {
-                    if let Ok((address, Err(err))) = done {
-                        if let Some(reply) = pending.remove(&address) { let _ = reply.send(Err(err)); }
+                    if let Ok((address, res)) = done {
+                        match res {
+                            Ok(()) => {
+                                // Waiting for profile.next() callback
+                            }
+                            Err(err) => {
+                                if let Some(reply) = pending.remove(&address) {
+                                    let _ = reply.send(Err(err));
+                                }
+                            }
+                        }
                     }
                 }
                 Some(request) = profile.next() => {
@@ -431,7 +551,7 @@ pub(crate) async fn connect(
         .parse()?;
     let (reply, receive) = oneshot::channel();
     sender.send(Connect { address, reply }).await?;
-    tokio::time::timeout(Duration::from_secs(15), receive)
+    tokio::time::timeout(CONNECTION_TIMEOUT, receive)
         .await
         .context("Bluetooth connection timed out")??
 }
@@ -440,6 +560,21 @@ pub(crate) async fn connect(
 mod tests {
     use super::*;
     use crate::utils::gen_mdns_endpoint_info;
+
+    #[tokio::test]
+    async fn connection_preserves_service_errors_and_targets_the_selected_device() {
+        assert!(CONNECTION_TIMEOUT > SERVICE_CONNECT_TIMEOUT);
+        let (sender, mut receiver) = mpsc::channel::<Connect>(1);
+        let connect = connect(&sender, "bluetooth://02:00:00:00:00:01");
+        let service = async {
+            let request = receiver.recv().await.unwrap();
+            assert_eq!(request.address.to_string(), "02:00:00:00:00:01");
+            let _ = request.reply.send(Err(anyhow!("org.bluez.Error.NotAvailable")));
+        };
+        let (result, ()) = tokio::join!(connect, service);
+        assert!(result.err().unwrap().to_string().contains("NotAvailable"));
+        assert!(super::connect(&sender, "bad address").await.is_err());
+    }
     #[test]
     fn receiving_slot_contains_endpoint_info_and_classic_address() {
         let info = vec![7; 27];

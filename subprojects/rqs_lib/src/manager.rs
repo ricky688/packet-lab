@@ -85,7 +85,7 @@ impl TcpServer {
                         if let Err(error) = connect_session(endpoint, connector, sender.clone(), upgrade,
                             #[cfg(all(feature = "experimental", target_os = "linux"))] bluetooth,
                             cctk, i).await {
-                            error!("{INNER_NAME}: error sending: {error}");
+                            error!("{INNER_NAME}: error sending: {error:#}");
                             let _ = sender.send(ChannelMessage { id, msg: channel::Message::Client(MessageClient {
                                 error: Some(format!("{error:#}")), kind: TransferKind::Outbound, state: Some(TransferState::Disconnected), metadata: None,
                             }) });
@@ -231,7 +231,7 @@ pub(crate) async fn receive(
                         error: Some(format!("{error:#}")),
                         kind: TransferKind::Inbound,
                         state: Some(TransferState::Disconnected),
-                        metadata: None,
+                        metadata: request.state.transfer_metadata.clone(),
                     }),
                 });
                 warn!("Incoming session {id}: {error}");

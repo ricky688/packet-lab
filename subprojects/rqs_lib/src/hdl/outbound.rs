@@ -130,7 +130,11 @@ impl OutboundRequest {
         };
 
         Self {
-            upgrade: Default::default(),
+            upgrade: {
+                let mut upgrade = crate::bwu::Upgrade::default();
+                upgrade.client_only = true;
+                upgrade
+            },
             endpoint_id,
             socket: crate::transport::Transport::new(socket),
             state: InnerState {
@@ -157,13 +161,18 @@ impl OutboundRequest {
                 && self.upgrade.waiting.is_none()
                 && !self.upgrade.last_sent
             {
-                if let Ok(Some(offer)) = self.upgrade.offer() {
+                if let Ok(Some(offer)) = self.upgrade.offer().await {
                     info!("LAN upgrade failed; sender falling back to Wi-Fi Direct offer");
                     self.encrypt_and_send(&offer).await?;
                 }
             }
-            if let Some(consent) = self.deferred_consent.take() {
-                return self.process_consent(&consent).await;
+            if self.upgrade.waiting.is_none()
+                && !self.upgrade.last_sent
+                && self.upgrade.next.is_none()
+            {
+                if let Some(consent) = self.deferred_consent.take() {
+                    return self.process_consent(&consent).await;
+                }
             }
         }
         // Buffer for the 4-byte length
@@ -177,7 +186,16 @@ impl OutboundRequest {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
                     None => std::future::pending::<()>().await,
                 }
-            } => return Err(anyhow!("Wi-Fi handover timed out")),
+            } => {
+                if let Some(offer) = self.upgrade.on_deadline_expired().await? {
+                    self.encrypt_and_send(&offer).await?;
+                    return Ok(());
+                }
+                if let Some(consent) = self.deferred_consent.take() {
+                    return self.process_consent(&consent).await;
+                }
+                return Ok(());
+            },
             _ = async {
                 match completion_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -215,16 +233,15 @@ impl OutboundRequest {
             },
             first = self.socket.read(&mut length_buf[..1]) => {
                 let first = first?;
+                if first == 0 {
+                    if self.completion_deadline.is_some() {
+                        return self.receiver_completed().await;
+                    }
+                    return Err(anyhow!("Receiver closed before all payloads were sent"));
+                }
                 let read_frame = async {
                     // Channel events must not discard a partially read frame header.
-                    if first == 0 {
-                        if self.completion_deadline.is_some() {
-                            return self.receiver_completed().await;
-                        }
-                        return Err(anyhow!("Receiver closed before all payloads were sent"));
-                    }
-                    stream_read_exact(&mut self.socket, &mut length_buf[1..]).await?;
-                    self._handle(length_buf).await
+                    stream_read_exact(&mut self.socket, &mut length_buf[1..]).await
                 };
                 if let Some(deadline) = completion_deadline.into_iter().chain(upgrade_deadline).min() {
                     tokio::time::timeout_at(deadline, read_frame).await
@@ -232,6 +249,7 @@ impl OutboundRequest {
                 } else {
                     read_frame.await?;
                 }
+                self._handle(length_buf).await?;
             }
         }
 
@@ -248,7 +266,14 @@ impl OutboundRequest {
 
         // Allocate buffer for the actual message and read it
         let mut frame_data = vec![0u8; msg_length];
-        stream_read_exact(&mut self.socket, &mut frame_data).await?;
+        // Bound wire reads only: processing a consent frame may start a long transfer.
+        let read = stream_read_exact(&mut self.socket, &mut frame_data);
+        if let Some(deadline) = self.completion_deadline.into_iter().chain(self.upgrade.deadline).min() {
+            tokio::time::timeout_at(deadline, read).await
+                .map_err(|_| if Some(deadline) == self.upgrade.deadline { anyhow!("Wi-Fi handover timed out") } else { anyhow!("Receiver did not finish the transfer within 30 seconds") })??;
+        } else {
+            read.await?;
+        }
 
         let current_state = &self.state;
         // Now determine what will be the request type based on current state
@@ -292,6 +317,10 @@ impl OutboundRequest {
                 .await;
             }
             _ => {
+                if self.upgrade.uses_link_encryption() {
+                    let frame = OfflineFrame::decode(frame_data.as_slice())?;
+                    return self.process_offline_frame(&frame).await;
+                }
                 debug!("Handling SecureMessage frame");
                 let smsg = SecureMessage::decode(&*frame_data)?;
                 self.decrypt_and_process_secure_message(&smsg).await?;
@@ -319,6 +348,19 @@ impl OutboundRequest {
                         }
                         .serialize(),
                     ),
+                    medium_metadata: Some(location_nearby_connections::MediumMetadata {
+                        medium_role: Some(location_nearby_connections::MediumRole {
+                            support_wifi_direct_group_owner: Some(false),
+                            support_wifi_direct_group_client: Some(true),
+                            support_wifi_hotspot_host: Some(true),
+                            support_wifi_hotspot_client: Some(false),
+                            ..Default::default()
+                        }),
+                        supported_wifi_direct_auth_types: vec![
+                            location_nearby_connections::medium_metadata::WifiDirectAuthType::WifiDirectWithPassword.into(),
+                        ],
+                        ..Default::default()
+                    }),
                     mediums: vec![
                         Medium::WifiLan.into(),
                         Medium::WifiDirect.into(),
@@ -501,6 +543,7 @@ impl OutboundRequest {
         // The advertising peer (receiver) initiates Nearby's bandwidth upgrade after consent.
         if self.upgrade.bluetooth {
             self.upgrade.deadline = Some(Instant::now() + Duration::from_secs(60));
+            // The phone supplies the P2P GO; prewarming an AP occupies its client interface.
         }
 
         Ok(())
@@ -561,6 +604,14 @@ impl OutboundRequest {
                 crate::bwu::Action::Send(frames) => {
                     for frame in frames {
                         self.encrypt_and_send(&frame).await?;
+                    }
+                    if self.upgrade.lan_failed
+                        && self.upgrade.direct_failed
+                        && self.upgrade.waiting.is_none()
+                    {
+                        if let Some(consent) = self.deferred_consent.take() {
+                            self.process_consent(&consent).await?;
+                        }
                     }
                 }
                 crate::bwu::Action::Switch => {
@@ -736,8 +787,10 @@ impl OutboundRequest {
 
             if self.upgrade.bluetooth && !self.upgrade.complete {
                 if self.upgrade.context.is_some() {
-                    if let Some(offer) = self.upgrade.offer()? {
-                        info!("Bluetooth -> Wi-Fi: sender offering upgrade path after retry request");
+                    if let Some(offer) = self.upgrade.offer().await? {
+                        info!(
+                            "Bluetooth -> Wi-Fi: sender offering upgrade path after retry request"
+                        );
                         self.encrypt_and_send(&offer).await?;
                     }
                 }
@@ -992,18 +1045,23 @@ impl OutboundRequest {
                 if self.upgrade.bluetooth
                     && !self.upgrade.complete
                     && (self.upgrade.last_sent
+                        || self.upgrade.waiting.is_some()
                         || (!self.upgrade.lan_failed
                             && self
                                 .state
                                 .transfer_metadata
                                 .as_ref()
-                                .is_some_and(|m| m.total_bytes >= 1_000_000)))
+                                .is_some_and(|m| m.total_bytes >= 65_536)))
                 {
                     self.deferred_consent = Some(v1_frame.clone());
                     if !self.upgrade.last_sent && self.upgrade.waiting.is_none() {
-                        if let Some(offer) = self.upgrade.offer()? {
-                            info!("Bluetooth -> Wi-Fi: sender proactively proposing bandwidth upgrade offer after consent");
+                        if let Some(offer) = self.upgrade.offer().await? {
+                            info!(
+                                "Bluetooth -> Wi-Fi: sender proactively proposing bandwidth upgrade offer after consent"
+                            );
                             self.encrypt_and_send(&offer).await?;
+                        } else if self.upgrade.client_only {
+                            self.upgrade.deadline = Some(Instant::now() + Duration::from_millis(3500));
                         }
                     }
                     return Ok(());
@@ -1143,6 +1201,13 @@ impl OutboundRequest {
                                 }
                                 Ok(Err(error)) => return Err(error.into()),
                                 Err(_) => {}
+                            }
+                        }
+                        // After LAST_WRITE, only read upgrade markers until the new channel is safe.
+                        while self.upgrade.last_sent && !self.upgrade.complete {
+                            Box::pin(self.handle()).await?;
+                            if self.state.state == TransferState::Cancelled {
+                                return Ok(());
                             }
                         }
                         // Since this task's runtime is blocked with the outer loop,
@@ -1560,6 +1625,10 @@ impl OutboundRequest {
             return Ok(());
         }
 
+        if self.upgrade.uses_link_encryption() {
+            return self.send_frame(frame.encode_to_vec()).await;
+        }
+
         let d2d_msg = DeviceToDeviceMessage {
             sequence_number: Some(self.get_server_seq_inc().await),
             message: Some(frame.encode_to_vec()),
@@ -1739,6 +1808,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn negotiated_direct_link_uses_offline_frames_without_advancing_crypto() {
+        let (mut request, mut peer) = text_sender().await;
+        request.upgrade.bluetooth = true;
+        request.upgrade.active_medium = Some(Medium::WifiDirect);
+        request.upgrade.link_encryption = true;
+        request.upgrade.complete = true;
+        let sequence = request.state.server_seq;
+        request.process_consent(&consent()).await.unwrap();
+        for _ in 0..2 {
+            let size = peer.read_u32().await.unwrap();
+            let mut bytes = vec![0; size as usize];
+            peer.read_exact(&mut bytes).await.unwrap();
+            let frame = OfflineFrame::decode(bytes.as_slice()).unwrap();
+            assert_eq!(frame.v1.unwrap().r#type(),
+                location_nearby_connections::v1_frame::FrameType::PayloadTransfer);
+        }
+        assert_eq!(request.state.server_seq, sequence);
+        let ack = control_frame(42,
+            location_nearby_connections::payload_transfer_frame::control_message::EventType::PayloadReceivedAck.into());
+        let bytes = ack.encode_to_vec();
+        peer.write_u32(bytes.len() as u32).await.unwrap();
+        peer.write_all(&bytes).await.unwrap();
+        request.handle().await.unwrap();
+        assert_eq!(request.state.client_seq, 0);
+        assert_ne!(request.state.state, TransferState::Finished);
+    }
+
+    #[tokio::test]
+    async fn offline_frames_are_rejected_without_a_completed_negotiated_direct_link() {
+        for (complete, negotiated, medium) in [
+            (false, true, Medium::WifiDirect),
+            (true, false, Medium::WifiDirect),
+            (true, true, Medium::WifiLan),
+        ] {
+            let (mut request, mut peer) = text_sender().await;
+            request.state.state = TransferState::SendingFiles;
+            request.state.decrypt_key = Some(vec![1; 32]);
+            request.state.recv_hmac_key = Some(vec![2; 32]);
+            request.upgrade.complete = complete;
+            request.upgrade.link_encryption = negotiated;
+            request.upgrade.active_medium = Some(medium);
+            let bytes = control_frame(42, 0).encode_to_vec();
+            peer.write_u32(bytes.len() as u32).await.unwrap();
+            peer.write_all(&bytes).await.unwrap();
+            assert!(request.handle().await.is_err());
+            assert_ne!(request.state.state, TransferState::Finished);
+        }
+    }
+
+    #[tokio::test]
     async fn sent_bytes_are_not_reported_as_receiver_completion() {
         let (mut request, _peer) = text_sender().await;
         request.process_consent(&consent()).await.unwrap();
@@ -1770,7 +1889,60 @@ mod tests {
         assert!(peer.read_u32().await.unwrap() > 0);
     }
 
-    async fn drain_payload(peer: &mut TcpStream) {
+    #[tokio::test]
+    async fn active_file_send_waits_for_upgrade_markers_before_reading_more_data() {
+        let (mut sender, peer) = text_sender().await;
+        let (wifi, mut wifi_peer) = text_sender().await;
+        sender.payload = OutboundPayload::Files(vec![]);
+        sender.state.decrypt_key = Some(vec![1; 32]);
+        sender.state.recv_hmac_key = Some(vec![2; 32]);
+        sender.upgrade.bluetooth = true;
+        sender.upgrade.lan_failed = true;
+        sender.upgrade.next = Some(wifi.socket);
+        sender.upgrade.deadline = Some(Instant::now() + Duration::from_secs(2));
+        let path = std::env::temp_dir().join(format!("packet-upgrade-{}", rand::random::<u64>()));
+        File::create_new(&path).unwrap().set_len(1024 * 1024).unwrap();
+        let file = File::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        sender.state.transferred_files.insert(42, InternalFileInfo {
+            payload_id: 42, file_url: path, bytes_transferred: 0,
+            total_size: 1024 * 1024, file: Some(file),
+        });
+        let (events, _) = broadcast::channel(50);
+        let mut remote = OutboundRequest::new(*b"PEER", peer, "sender".into(), events,
+            OutboundPayload::Files(vec![]),
+            RemoteDeviceInfo { name: "peer".into(), device_type: DeviceType::Laptop });
+        remote.state.encrypt_key = Some(vec![1; 32]);
+        remote.state.send_hmac_key = Some(vec![2; 32]);
+        use crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::EventType;
+        remote.encrypt_and_send(&crate::bwu::event(EventType::LastWriteToPriorChannel)).await.unwrap();
+        let receiver = async {
+            drain_payload(&mut remote.socket).await;
+            // Leave the sender enough time to overflow its old 32-frame queue.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            remote.encrypt_and_send(&crate::bwu::event(EventType::SafeToClosePriorChannel)).await.unwrap();
+            let mut received = 0;
+            for _ in 0..3 {
+                let size = wifi_peer.read_u32().await.unwrap();
+                let mut body = vec![0; size as usize];
+                wifi_peer.read_exact(&mut body).await.unwrap();
+                received += size;
+            }
+            received
+        };
+        let accepted = consent();
+        let (_, received) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::try_join!(sender.process_consent(&accepted), async {
+                Ok::<_, anyhow::Error>(receiver.await)
+            })
+        }).await.unwrap().unwrap();
+        assert!(received > 1024 * 1024);
+        assert!(sender.upgrade.complete);
+        assert!(sender.upgrade.deferred.is_empty());
+        assert_eq!(sender.state.transfer_metadata.as_ref().unwrap().ack_bytes, 1024 * 1024);
+    }
+
+    async fn drain_payload(peer: &mut (impl tokio::io::AsyncRead + Unpin)) {
         for _ in 0..2 {
             let len = peer.read_u32().await.unwrap();
             assert!(len < SANE_FRAME_LENGTH as u32);
@@ -1941,6 +2113,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn glare_keeps_reading_upgrade_markers_instead_of_replaying_consent() {
+        let (mut request, _peer) = text_sender().await;
+        request.upgrade.bluetooth = true;
+        request.upgrade.lan_failed = true;
+        request.upgrade.last_sent = true;
+        request.upgrade.next = Some(crate::transport::Transport::new(tokio::io::empty()));
+        request.deferred_consent = Some(consent());
+        // No incoming data: a healthy handler waits for the peer's marker, not an immediate consent replay.
+        assert!(tokio::time::timeout(Duration::from_millis(20), request.handle()).await.is_err());
+        assert!(request.deferred_consent.is_some());
+    }
+
+    #[tokio::test]
     async fn failed_lan_releases_large_payload_consent_on_bluetooth() {
         let (mut request, mut peer) = text_sender().await;
         request.upgrade.bluetooth = true;
@@ -1984,6 +2169,68 @@ mod tests {
                 .to_string()
                 .contains("Wi-Fi handover timed out")
         );
+    }
+
+    #[tokio::test]
+    async fn stalled_frame_body_remains_bounded_by_transfer_deadlines() {
+        for upgrading in [true, false] {
+            let (mut request, mut peer) = text_sender().await;
+            let deadline = Instant::now() + Duration::from_millis(30);
+            let expected = if upgrading {
+                request.upgrade.deadline = Some(deadline);
+                "Wi-Fi handover timed out"
+            } else {
+                request.completion_deadline = Some(deadline);
+                "Receiver did not finish"
+            };
+            peer.write_u32(32).await.unwrap();
+            peer.write_all(&[1, 2]).await.unwrap();
+            assert!(next_error(&mut request).await.to_string().contains(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_bluetooth_payload_outlives_the_old_upgrade_deadline() {
+        let (mut request, peer) = text_sender().await;
+        request.state.decrypt_key = Some(vec![1; 32]);
+        request.state.recv_hmac_key = Some(vec![2; 32]);
+        request.state.state = TransferState::SentIntroduction;
+        request.payload = OutboundPayload::Text {
+            text: "x".repeat(4 * 1024 * 1024),
+            text_type: TextPayloadType::Text,
+        };
+        request.upgrade.bluetooth = true;
+        request.upgrade.lan_failed = true;
+        request.upgrade.direct_failed = true;
+        let (events, _) = broadcast::channel(50);
+        let mut remote = OutboundRequest::new(
+            *b"PEER", peer, "test-sender".into(), events,
+            OutboundPayload::Files(vec![]),
+            RemoteDeviceInfo { name: "peer".into(), device_type: DeviceType::Laptop },
+        );
+        remote.state.encrypt_key = Some(vec![1; 32]);
+        remote.state.send_hmac_key = Some(vec![2; 32]);
+        remote.send_encrypted_frame(&sharing_nearby::Frame {
+            version: Some(sharing_nearby::frame::Version::V1.into()),
+            v1: Some(consent()),
+        }).await.unwrap();
+        request.upgrade.deadline = Some(Instant::now() + Duration::from_millis(100));
+        let reader = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let mut bytes = 0;
+            for _ in 0..2 {
+                let size = remote.socket.read_u32().await.unwrap();
+                let mut body = vec![0; size as usize];
+                remote.socket.read_exact(&mut body).await.unwrap();
+                bytes += size;
+            }
+            bytes
+        });
+        while request.state.state != TransferState::SendingFiles {
+            request.handle().await.unwrap();
+        }
+        assert!(request.upgrade.deadline.is_none());
+        assert!(reader.await.unwrap() > 4 * 1024 * 1024);
     }
 
     #[tokio::test]
@@ -2053,11 +2300,13 @@ mod tests {
         let mut buf = vec![0u8; len as usize];
         peer.read_exact(&mut buf).await.unwrap();
         let offline = OfflineFrame::decode(buf.as_slice()).unwrap();
-        let conn_req = offline
-            .v1
-            .unwrap()
-            .connection_request
-            .unwrap();
+        let conn_req = offline.v1.unwrap().connection_request.unwrap();
+        let metadata = conn_req.medium_metadata.unwrap();
+        assert_eq!(metadata.supported_wifi_direct_auth_types, vec![1]);
+        let roles = metadata.medium_role.unwrap();
+        assert_eq!(roles.support_wifi_direct_group_owner, Some(false));
+        assert_eq!(roles.support_wifi_direct_group_client, Some(true));
+        assert_eq!(roles.support_wifi_hotspot_client, Some(false));
         let mediums = conn_req.mediums;
         assert!(mediums.contains(&(Medium::WifiLan as i32)));
         assert!(mediums.contains(&(Medium::WifiDirect as i32)));
@@ -2090,7 +2339,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sender_proactively_offers_wifi_direct_on_consent_when_bluetooth() {
+    async fn sender_does_not_create_an_ap_competing_with_the_phone_group_owner() {
         let (mut sender, mut peer) = text_sender().await;
         sender.state.encrypt_key = Some(vec![1; 32]);
         sender.state.send_hmac_key = Some(vec![2; 32]);
@@ -2098,6 +2347,7 @@ mod tests {
         let mut ctx = crate::bwu::Context::new(*b"LOCL", 9300);
         ctx.address = None;
         ctx.wifi_direct = Some(crate::bwu::WifiDirectOffer {
+            medium: crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::upgrade_path_info::Medium::WifiDirect,
             ssid: "DIRECT-test-sender".into(),
             password: "testpassword123".into(),
             gateway: std::net::Ipv4Addr::new(192, 168, 49, 1),
@@ -2109,8 +2359,14 @@ mod tests {
 
         sender.process_consent(&consent()).await.unwrap();
         assert!(sender.deferred_consent.is_some());
-        assert!(sender.upgrade.direct_offered.is_some());
-        // Verify peer received encrypted offer frame
-        assert!(peer.read_u32().await.unwrap() > 0);
+        assert!(sender.upgrade.client_only);
+        assert!(sender.upgrade.direct_offered.is_none());
+        assert!(tokio::time::timeout(Duration::from_millis(20), peer.read_u32()).await.is_err());
+        assert!(sender.upgrade.deadline.is_some());
+        assert!(sender.upgrade.on_deadline_expired().await.unwrap().is_none());
+        sender.handle().await.unwrap();
+        drain_payload(&mut peer).await;
+        assert_eq!(sender.state.state, TransferState::SendingFiles);
+        assert!(sender.upgrade.deadline.is_none());
     }
 }

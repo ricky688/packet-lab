@@ -1,5 +1,15 @@
 # Changelog
 
+## Wi-Fi handover and network authorization — 2026-10-26
+
+- Complete legacy Android Wi-Fi Direct client joining using authenticated SSID/PSK credentials, volatile NetworkManager profiles and validated address readiness while preserving station routing and DNS.
+- Fix simultaneous-upgrade consent loops, deferred-write overflow and stale transfer deadlines. Switch to negotiated link-encrypted OfflineFrames only after the channel handover completes.
+- Resolve Nearby Bluetooth services through SDP and rebuild profiles and advertisements after BlueZ restarts.
+- Add optional fixed, root-owned AP/P2P helpers and account-scoped polkit installation/removal, with authorization-boundary tests. Quick Share receive consent remains required.
+- Validate PC-to-phone Wi-Fi Direct and phone-to-PC Hotspot transfers with matching hashes and VPN enabled. Saved pairing improved warm-session Bluetooth connection latency; cold startup, reverse Wi-Fi Direct and sustained throughput remain unverified.
+- Validation: 55 protocol tests, 8 application tests, 7 P2P helper tests and 3 installer tests passed; one hardware-initialization test was excluded.
+- See [handover requirements and installation](docs/HOTSPOT-HANDOVER.md).
+
 ## Universal multi-device discovery, zero-config LAN filtering, and Wi-Fi P2P BWU handover — 2026-10-24
 
 - Implemented automatic physical LAN interface detection (`Connector::is_physical_lan_interface` and `Connector::find_interface_for_peer`) to filter out virtual/VPN/Docker/Bluetooth-bridge interfaces (`vpn`, `tun*`, `tailscale*`, `docker*`, `btnap*`, `virbr*`, `p2p-dev-*`) in `MDnsServer`, `MDnsDiscovery`, and `Connector` without requiring a single-peer `RQS_LAN_ROUTE` override.

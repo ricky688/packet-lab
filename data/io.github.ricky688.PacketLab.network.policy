@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Packet Lab</vendor>
+  <action id="io.github.ricky688.PacketLab.network.ap">
+    <description>Create a temporary Packet Lab Wi-Fi hotspot</description>
+    <message>Authentication is required to create the Packet Lab direct network</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/packet-lab-network/wifi-ap-helper.py</annotate>
+  </action>
+  <action id="io.github.ricky688.PacketLab.network.p2p-client">
+    <description>Join an authenticated Packet Lab Wi-Fi Direct group</description>
+    <message>Authentication is required to join the Packet Lab direct network</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/packet-lab-network/wifi-p2p-client-helper.py</annotate>
+  </action>
+</policyconfig>
