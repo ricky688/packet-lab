@@ -10,6 +10,12 @@ Extract the Linux x86_64 archive and run `./packet-lab` from its folder. This is
 
 ## Send without entering an IP address
 
+Drag one or more files from your file manager onto Packet Lab's main page to open
+**Send To…**, then choose a recipient and accept the request on the receiving
+device. Dropping files onto the file list adds them to the selection and opens
+the same picker. Files are copied; dropping never selects a recipient automatically.
+Folders and empty files are currently unsupported.
+
 Keep Bluetooth enabled and open Quick Share's receive screen on the phone. In **Send To…**, select its Bluetooth card, compare the pairing code and accept on the phone. The address shown below each Bluetooth name helps distinguish devices with the same name.
 
 Packet Lab establishes the encrypted Nearby session over Bluetooth Classic/RFCOMM. For large payloads it follows the receiver's Wi-Fi LAN upgrade negotiation, retaining the encryption keys and sequence numbers. Small payloads below Nearby's 1 MB threshold can remain on Bluetooth. Verified with end-to-end file transfers with active VPNs enabled; this is not a guarantee for other network policies.

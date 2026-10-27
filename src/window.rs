@@ -1461,13 +1461,20 @@ impl Window {
             #[upgrade_or]
             false,
             move |_, value, _, _| {
-                imp.manage_files_model.remove_all();
-                if let Ok(file_list) = value.get::<gdk::FileList>() {
-                    imp.obj()
-                        .handle_added_files_to_send(&imp.manage_files_model, file_list.files());
+                let Ok(file_list) = value.get::<gdk::FileList>() else {
+                    return false;
+                };
+                if file_list.files().is_empty() {
+                    return false;
                 }
-
-                false
+                imp.manage_files_model.remove_all();
+                let accepted = imp.obj()
+                    .handle_added_files_to_send(&imp.manage_files_model, file_list.files());
+                if accepted {
+                    *imp.send_text.borrow_mut() = None;
+                    imp.obj().present_recipients_dialog();
+                }
+                accepted
             }
         ));
 
@@ -1586,12 +1593,19 @@ impl Window {
             #[upgrade_or]
             false,
             move |_, value, _, _| {
-                if let Ok(file_list) = value.get::<gdk::FileList>() {
-                    imp.obj()
-                        .handle_added_files_to_send(&imp.manage_files_model, file_list.files());
+                let Ok(file_list) = value.get::<gdk::FileList>() else {
+                    return false;
+                };
+                if file_list.files().is_empty() {
+                    return false;
                 }
-
-                false
+                let accepted = imp.obj()
+                    .handle_added_files_to_send(&imp.manage_files_model, file_list.files());
+                if accepted {
+                    *imp.send_text.borrow_mut() = None;
+                    imp.obj().present_recipients_dialog();
+                }
+                accepted
             }
         ));
 
@@ -2934,5 +2948,48 @@ impl Window {
         }
 
         rqs_init_handle
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gtk::test]
+    #[ignore = "Requires a display, compiled resources, memory GSettings and an isolated D-Bus session"]
+    fn file_drops_open_recipient_picker_and_reject_unsupported_content() {
+        adw::init().unwrap();
+        for path in ["_build/data/resources/resources.gresource", "_build/src/ui-resources.gresource"] {
+            gio::resources_register(&gio::Resource::load(path).unwrap());
+        }
+        let app = Application::default();
+        app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
+        app.register(gio::Cancellable::NONE).unwrap();
+        let window = Window::new(&app);
+        let imp = window.imp();
+        imp.root_stack.set_visible_child_name("main_page");
+        imp.is_mdns_discovery_on.set(true); // This test exercises the picker without starting networking.
+        let directory = std::env::temp_dir().join(format!("packet-drop-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let first = gio::File::for_path(directory.join("first file.txt"));
+        let second = gio::File::for_path(directory.join("second.txt"));
+        std::fs::write(first.path().unwrap(), b"first").unwrap();
+        std::fs::write(second.path().unwrap(), b"second").unwrap();
+        let drop_on = |widget: &gtk::Widget, files: &[gio::File]| {
+            let target = widget.observe_controllers().iter::<glib::Object>()
+                .filter_map(Result::ok).find_map(|controller| controller.downcast::<gtk::DropTarget>().ok()).unwrap();
+            let value = glib::BoxedValue(gdk::FileList::from_array(files).to_value());
+            target.emit_by_name::<bool>("drop", &[&value, &0.0f64, &0.0f64])
+        };
+        assert!(drop_on(imp.main_nav_content.upcast_ref(), &[first.clone(), second.clone()]));
+        assert_eq!(imp.manage_files_model.n_items(), 2);
+        assert!(imp.is_recipients_dialog_opened.get());
+        assert_eq!(imp.recipient_model.n_items(), 0, "Dropping must not select or send to a recipient");
+        assert!(!drop_on(imp.manage_files_nav_content.upcast_ref(), &[gio::File::for_path(&directory)]));
+        assert_eq!(imp.manage_files_model.n_items(), 2);
+        assert!(drop_on(imp.manage_files_nav_content.upcast_ref(), &[first]));
+        assert_eq!(imp.manage_files_model.n_items(), 2, "An existing file must not be duplicated");
+        std::fs::remove_dir_all(directory).unwrap();
+        window.destroy();
     }
 }
