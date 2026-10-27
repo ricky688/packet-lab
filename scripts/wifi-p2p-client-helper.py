@@ -19,6 +19,15 @@ NM = 'org.freedesktop.NetworkManager'
 NMROOT = '/org/freedesktop/NetworkManager'
 
 
+def system_tool(name):
+    # Ignore caller PATH; Debian and Arch place administrative tools differently.
+    for directory in ('/usr/bin', '/usr/sbin'):
+        path = directory + '/' + name
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    raise FileNotFoundError('Required system tool is missing: ' + name)
+
+
 def private_v4(value):
     ip = ipaddress.IPv4Address(value)
     if not any(ip in ipaddress.IPv4Network(net) for net in
@@ -238,7 +247,7 @@ def run(parent, probe=False):
             time.sleep(.1)
         if not iface or not re.fullmatch(r'p2p-[A-Za-z0-9_.-]{1,11}', iface) or iface == parent:
             raise RuntimeError('No separate P2P-client interface became associated')
-        info = subprocess.run(['/usr/bin/iw', 'dev', iface, 'info'], capture_output=True,
+        info = subprocess.run([system_tool('iw'), 'dev', iface, 'info'], capture_output=True,
                               text=True, check=True).stdout
         if 'type P2P-client' not in info:
             raise RuntimeError('Joined interface is not a P2P client')

@@ -17,6 +17,15 @@ NM = 'org.freedesktop.NetworkManager'
 IDLE_LEASE_SECONDS = 300
 
 
+def system_tool(name):
+    # Ignore caller PATH; Debian and Arch place administrative tools differently.
+    for directory in ('/usr/bin', '/usr/sbin'):
+        path = directory + '/' + name
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    raise FileNotFoundError('Required system tool is missing: ' + name)
+
+
 def ap_traffic_bytes(iface=NAME):
     total = 0
     for counter in ('rx_bytes', 'tx_bytes'):
@@ -40,11 +49,11 @@ def permit_ap_dhcp():
     rule = ['-i', NAME, '-p', 'udp', '--sport', '68', '--dport', '67',
             '-m', 'comment', '--comment', 'packet-lab-dhcp-' + secrets.token_hex(8),
             '-j', 'ACCEPT']
-    subprocess.run(['/usr/bin/iptables', '-w', '5', '-I', 'INPUT', '1', *rule], check=True)
+    subprocess.run([system_tool('iptables'), '-w', '5', '-I', 'INPUT', '1', *rule], check=True)
     try:
         yield
     finally:
-        subprocess.run(['/usr/bin/iptables', '-w', '5', '-D', 'INPUT', *rule], check=True)
+        subprocess.run([system_tool('iptables'), '-w', '5', '-D', 'INPUT', *rule], check=True)
 
 
 def valid_parent(name):
@@ -95,8 +104,8 @@ def run(parent, frequency):
     created = False
     try:
         if not station_connected:
-            subprocess.run(['/usr/bin/ip', 'link', 'set', parent, 'up'], check=False)
-        subprocess.run(['/usr/bin/iw', 'dev', parent, 'interface', 'add', NAME,
+            subprocess.run([system_tool('ip'), 'link', 'set', parent, 'up'], check=False)
+        subprocess.run([system_tool('iw'), 'dev', parent, 'interface', 'add', NAME,
                         'type', '__ap'], check=True)
         created = True
         deadline = time.monotonic() + 5
@@ -111,8 +120,8 @@ def run(parent, frequency):
             raise RuntimeError('NM did not discover the AP interface')
         call(device, 'org.freedesktop.DBus.Properties', 'Set',
              GLib.Variant('(ssv)', (NM + '.Device', 'Managed', GLib.Variant('b', False))))
-        subprocess.run(['/usr/bin/ip', 'link', 'set', NAME, 'down'], check=True)
-        subprocess.run(['/usr/bin/iw', 'dev', NAME, 'set', 'type', '__ap'], check=True)
+        subprocess.run([system_tool('ip'), 'link', 'set', NAME, 'down'], check=True)
+        subprocess.run([system_tool('iw'), 'dev', NAME, 'set', 'type', '__ap'], check=True)
         temp_dir = tempfile.TemporaryDirectory(prefix='packet-lab-ap-', dir='/run')
         temp = temp_dir.name
         ssid = 'PacketLab-' + secrets.token_hex(3)
@@ -124,14 +133,14 @@ def run(parent, frequency):
                          'ssid="' + ssid + '"\nmode=2\nfrequency=' + str(frequency) + '\n'
                          'key_mgmt=WPA-PSK\nproto=RSN\npairwise=CCMP\n'
                          'psk="' + password + '"\n}\n')
-        wpa = subprocess.Popen(['/usr/bin/wpa_supplicant', '-Dnl80211', '-i', NAME, '-c', config],
+        wpa = subprocess.Popen([system_tool('wpa_supplicant'), '-Dnl80211', '-i', NAME, '-c', config],
                                stdout=sys.stderr, stderr=sys.stderr)
         children.append(wpa)
         deadline = time.monotonic() + 10
         while True:
             if wpa.poll() is not None:
                 raise RuntimeError('Private AP supplicant exited')
-            status = subprocess.run(['/usr/bin/wpa_cli', '-p', temp + '/ctrl', '-i', NAME, 'status'],
+            status = subprocess.run([system_tool('wpa_cli'), '-p', temp + '/ctrl', '-i', NAME, 'status'],
                                     capture_output=True, text=True, timeout=2).stdout
             if 'wpa_state=COMPLETED' in status:
                 if 'freq=' + str(frequency) not in status.splitlines():
@@ -142,9 +151,9 @@ def run(parent, frequency):
             time.sleep(.1)
         if station_connected and (prop(station, NM + '.Device', 'State') != 100 or prop(station, NM + '.Device', 'ActiveConnection') != original):
             raise RuntimeError('AP affected the original Wi-Fi connection')
-        subprocess.run(['/usr/bin/ip', 'address', 'add', '192.168.49.1/24', 'dev', NAME], check=True)
+        subprocess.run([system_tool('ip'), 'address', 'add', '192.168.49.1/24', 'dev', NAME], check=True)
         with permit_ap_dhcp():
-            dhcp = subprocess.Popen(['/usr/bin/dnsmasq', '--keep-in-foreground', '--conf-file=/dev/null',
+            dhcp = subprocess.Popen([system_tool('dnsmasq'), '--keep-in-foreground', '--conf-file=/dev/null',
                 '--port=0', '--bind-interfaces', '--interface=' + NAME,
                 '--dhcp-range=192.168.49.2,192.168.49.254,255.255.255.0,15m',
                 '--dhcp-option=3', '--dhcp-option=6', '--dhcp-authoritative',
@@ -179,7 +188,7 @@ def run(parent, frequency):
         if temp_dir is not None:
             temp_dir.cleanup()
         if created:
-            subprocess.run(['/usr/bin/iw', 'dev', NAME, 'del'], check=True)
+            subprocess.run([system_tool('iw'), 'dev', NAME, 'del'], check=True)
 
 
 if __name__ == '__main__':

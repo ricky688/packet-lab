@@ -1,5 +1,11 @@
 # Changelog
 
+## AppImage alpha — 2026-10-27
+
+- Add a checksum-locked Ubuntu 24.04 AppImage build with GTK 4.22/libadwaita 1.9, dependency and glibc-version validation, source archives and license notices.
+- Keep Nemo actions pointed at the persistent image and provide a separate export command for fixed privileged network-helper setup. Support both `/usr/bin` and `/usr/sbin` for administrative network tools without searching the caller's PATH.
+- Verify startup on clean Ubuntu 24.04 without GTK, isolated GUI startup/quit, normal host FUSE startup and temporary integration setup. Real AppImage phone-transfer and other-distribution tests remain outstanding.
+
 ## File manager integration and desktop fixes — 2026-10-27
 
 - Read local `text/uri-list` drops directly instead of allowing GdkFileList to choose a failing portal transfer. Show a highlighted drop zone and report read failures. Bound the URI-list size and read timeout; reject remote URIs.

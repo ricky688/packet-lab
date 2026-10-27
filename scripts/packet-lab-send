@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Open the bundled Packet Lab recipient picker for local files."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import time
@@ -12,7 +13,8 @@ def main():
     files = [str(Path(name).absolute()) for name in sys.argv[1:]]
     if not files or any(not Path(name).is_file() for name in files):
         raise ValueError("Select one or more local files; folders are not supported.")
-    launcher = Path(__file__).resolve().with_name("packet-lab")
+    image = os.environ.get('APPIMAGE')
+    launcher = Path(image).resolve() if image else Path(__file__).resolve().with_name("packet-lab")
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     app = "io.github.ricky688.PacketLab"
     path = "/io/github/ricky688/PacketLab/Share"

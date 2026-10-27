@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+root=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
+
+# Integration commands use host Python and the persistent AppImage path.
+case ${1:-} in
+    --install-nemo-action|--uninstall-nemo-action)
+        option=$1
+        shift
+        if [ "$option" = --uninstall-nemo-action ]; then set -- --uninstall "$@"; fi
+        exec env -u LD_LIBRARY_PATH -u GI_TYPELIB_PATH /usr/bin/python3 "$root/usr/install-nemo-action" "$@"
+        ;;
+    --send-files)
+        shift
+        exec env -u LD_LIBRARY_PATH -u GI_TYPELIB_PATH /usr/bin/python3 "$root/usr/packet-lab-send" "$@"
+        ;;
+    --extract-network-helper)
+        if [ "$#" != 2 ] || [ -e "$2" ] || [ -L "$2" ]; then
+            echo 'Usage: --extract-network-helper NEW_DIRECTORY' >&2
+            exit 2
+        fi
+        mkdir -m 700 -- "$2"
+        for file in install-network-helper.py wifi-ap-helper.py wifi-p2p-client-helper.py io.github.ricky688.PacketLab.network.policy; do
+            cp -- "$root/usr/share/packet-lab/$file" "$2/$file"
+        done
+        printf 'Network helper files extracted to %s. See docs/APPIMAGE.md for administrator setup.\n' "$2"
+        exit 0
+        ;;
+esac
+
+export LD_LIBRARY_PATH="$root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GDK_PIXBUF_MODULEDIR="$root/usr/lib/gdk-pixbuf-loaders"
+export FONTCONFIG_FILE="$root/usr/etc/fonts/fonts.conf"
+export GTK_PATH="$root/usr/lib/gtk-4.0"
+export GIO_MODULE_DIR="$root/usr/lib/gio/modules"
+export GSETTINGS_BACKEND="${GSETTINGS_BACKEND:-keyfile}"
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+cache=$(mktemp "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/packet-lab-loaders.XXXXXX")
+trap 'rm -f -- "$cache"' EXIT
+"$root/usr/bin/gdk-pixbuf-query-loaders" "$GDK_PIXBUF_MODULEDIR"/*.so > "$cache"
+export GDK_PIXBUF_MODULE_FILE="$cache"
+"$root/usr/packet-lab" "$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null || true' HUP INT TERM
+status=0
+wait "$child" || status=$?
+if kill -0 "$child" 2>/dev/null; then wait "$child" || status=$?; fi
+exit "$status"

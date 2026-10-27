@@ -4,6 +4,14 @@ An experimental Linux Quick Share client based on [Packet](https://github.com/no
 
 Packet Lab has its own executable, application ID, settings, device name and log path, so it can run alongside Packet. It keeps the existing pairing, consent and encrypted transfer protocol.
 
+## AppImage alpha
+
+The x86_64 AppImage bundles the GTK/libadwaita runtime for the Ubuntu 24.04 /
+glibc 2.39 baseline. Mark it executable, then launch it. Bluetooth/network system
+services and drivers remain host requirements. See [AppImage instructions](docs/APPIMAGE.md)
+for checksum verification, Nemo/Thunar integration, optional network helper setup
+and the build recipe. Compatibility is limited to the systems actually tested.
+
 ## Run the native test bundle
 
 Extract the Linux x86_64 archive and run `./packet-lab` from its folder. This is a **native test bundle**, not a universal AppImage: it needs GTK 4.22 or newer, libadwaita 1.9 or newer, and compatible system libraries. See `BUILD-INFO.txt` in the bundle for the exact build environment. The first bundle is built on Arch Linux with glibc 2.44.

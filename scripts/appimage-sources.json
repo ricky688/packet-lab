@@ -1,0 +1,38 @@
+{
+  "glib-2.84.4.tar.xz": {
+    "url": "https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz",
+    "sha256": "8a9ea10943c36fc117e253f80c91e477b673525ae45762942858aef57631bb90"
+  },
+  "harfbuzz-8.4.0.tar.xz": {
+    "url": "https://github.com/harfbuzz/harfbuzz/releases/download/8.4.0/harfbuzz-8.4.0.tar.xz",
+    "sha256": "af4ea73e25ab748c8c063b78c2f88e48833db9b2ac369e29bd115702e789755e"
+  },
+  "cairo-1.18.4.tar.xz": {
+    "url": "https://cairographics.org/releases/cairo-1.18.4.tar.xz",
+    "sha256": "445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb"
+  },
+  "pango-1.56.4.tar.xz": {
+    "url": "https://download.gnome.org/sources/pango/1.56/pango-1.56.4.tar.xz",
+    "sha256": "17065e2fcc5f5a5bdbffc884c956bfc7c451a96e8c4fb2f8ad837c6413cb5a01"
+  },
+  "gtk-4.22.0.tar.xz": {
+    "url": "https://download.gnome.org/sources/gtk/4.22/gtk-4.22.0.tar.xz",
+    "sha256": "ed3932469d3d891df53451f2cd28380af7673f736aa443bb3dda7adb40994f1e"
+  },
+  "libadwaita-1.9.0.tar.xz": {
+    "url": "https://download.gnome.org/sources/libadwaita/1.9/libadwaita-1.9.0.tar.xz",
+    "sha256": "817837bf06363db5bbfce66085136eff1436af6625dfabff3ca08b87bfca1b6b"
+  },
+  "wayland-1.24.0.tar.xz": {
+    "url": "https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.24.0/downloads/wayland-1.24.0.tar.xz",
+    "sha256": "82892487a01ad67b334eca83b54317a7c86a03a89cfadacfef5211f11a5d0536"
+  },
+  "wayland-protocols-1.44.tar.xz": {
+    "url": "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.44/downloads/wayland-protocols-1.44.tar.xz",
+    "sha256": "3df1107ecf8bfd6ee878aeca5d3b7afd81248a48031e14caf6ae01f14eebb50e"
+  },
+  "appimage-runtime-source.tar.gz": {
+    "url": "https://codeload.github.com/AppImage/type2-runtime/tar.gz/fedfad51acc2860b2916a1eef32ba4a500ff31ef",
+    "sha256": "e27ea3c837e9c660e1a9a2993b673ae93bbb53077330efba8654031e302d4e8e"
+  }
+}
