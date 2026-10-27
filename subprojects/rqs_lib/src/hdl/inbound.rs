@@ -938,6 +938,17 @@ impl InboundRequest {
             }
             TransferState::ReceivedPairedKeyResult => {
                 debug!("Processing State::ReceivedPairedKeyResult");
+                if v1_frame.r#type() == sharing_nearby::v1_frame::FrameType::Response {
+                    let response = v1_frame.connection_response.as_ref()
+                        .ok_or_else(|| anyhow!("Response frame is missing connection_response"))?;
+                    if response.status() != sharing_nearby::connection_response_frame::Status::Accept {
+                        return Err(anyhow!("Peer ended transfer before introduction: response status {:?} (raw {:?})",
+                            response.status(), response.status));
+                    }
+                    // ACCEPT does not replace attachment metadata or local receive consent.
+                    info!("Peer sent ACCEPT before introduction; waiting for attachment metadata");
+                    return Ok(());
+                }
                 self.process_introduction(v1_frame).await?;
             }
             _ => {
@@ -1592,6 +1603,68 @@ mod tests {
     use super::*;
     use crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::upgrade_path_info::Medium;
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn early_accept_waits_for_introduction_and_local_consent() {
+        let (socket, _peer) = tokio::io::duplex(2048);
+        let (events, _) = tokio::sync::broadcast::channel(10);
+        let mut request = InboundRequest::new(socket, "test-phone".into(), events);
+        request.state.state = TransferState::ReceivedPairedKeyResult;
+        let response = sharing_nearby::Frame {
+            version: Some(1),
+            v1: Some(sharing_nearby::V1Frame {
+                r#type: Some(sharing_nearby::v1_frame::FrameType::Response.into()),
+                connection_response: Some(sharing_nearby::ConnectionResponseFrame {
+                    status: Some(sharing_nearby::connection_response_frame::Status::Accept.into()),
+                }),
+                ..Default::default()
+            }),
+        };
+        request.process_transfer_setup(&response).await.unwrap();
+        assert_eq!(request.state.state, TransferState::ReceivedPairedKeyResult);
+        assert!(request.state.transfer_metadata.is_none());
+        let introduction = sharing_nearby::Frame {
+            version: Some(1),
+            v1: Some(sharing_nearby::V1Frame {
+                r#type: Some(sharing_nearby::v1_frame::FrameType::Introduction.into()),
+                introduction: Some(sharing_nearby::IntroductionFrame {
+                    text_metadata: vec![sharing_nearby::TextMetadata {
+                        r#type: Some(text_metadata::Type::Text.into()),
+                        text_title: Some("Synthetic test".into()),
+                        payload_id: Some(7), size: Some(4), ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+        request.process_transfer_setup(&introduction).await.unwrap();
+        assert_eq!(request.state.state, TransferState::WaitingForUserConsent);
+        assert!(request.state.transfer_metadata.is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_or_denied_early_responses_do_not_advance_incoming_transfer() {
+        for status in [None, Some(0), Some(2), Some(3), Some(4), Some(5), Some(99)] {
+            let (socket, _peer) = tokio::io::duplex(2048);
+            let (events, _) = tokio::sync::broadcast::channel(10);
+            let mut request = InboundRequest::new(socket, "test-phone".into(), events);
+            request.state.state = TransferState::ReceivedPairedKeyResult;
+            let mut frame = sharing_nearby::Frame {
+                version: Some(1),
+                v1: Some(sharing_nearby::V1Frame {
+                    r#type: Some(sharing_nearby::v1_frame::FrameType::Response.into()),
+                    connection_response: Some(sharing_nearby::ConnectionResponseFrame { status }),
+                    ..Default::default()
+                }),
+            };
+            assert!(request.process_transfer_setup(&frame).await.is_err());
+            frame.v1.as_mut().unwrap().connection_response = None;
+            assert!(request.process_transfer_setup(&frame).await.is_err());
+            assert_eq!(request.state.state, TransferState::ReceivedPairedKeyResult);
+            assert!(request.state.transfer_metadata.is_none());
+        }
+    }
 
     #[tokio::test]
     async fn negotiated_direct_link_reads_and_replies_without_ukey2_wrapping() {

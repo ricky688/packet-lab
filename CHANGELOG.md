@@ -1,5 +1,10 @@
 # Changelog
 
+## Incoming handshake compatibility — 2026-10-27
+
+- While awaiting attachment metadata, allow an early sharing ACCEPT response without advancing the receive state or skipping local consent. Reject malformed/denied responses and report their actual status instead of an ambiguous missing-introduction error.
+- Add regressions for ACCEPT followed by introduction and for missing, denied and unknown response statuses.
+
 ## Foreground discovery — 2026-10-27
 
 - Start nearby-device discovery and enable receive visibility when Packet Lab is shown or activated; wait for service initialization before starting discovery. Keep scanning while the main window is visible and reuse discovered endpoints with fresh transfer state when opening the recipient picker.
