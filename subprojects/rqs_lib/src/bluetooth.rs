@@ -358,7 +358,7 @@ async fn advertise_receiving(
 ) -> anyhow::Result<(
     bluer::gatt::local::ApplicationHandle,
     bluer::adv::AdvertisementHandle,
-    Option<bluer::adv::AdvertisementHandle>,
+    tokio_util::task::AbortOnDropHandle<Option<bluer::adv::AdvertisementHandle>>,
 )> {
     use bluer::gatt::local::{Application, Characteristic, CharacteristicRead, ReqError, Service};
     use futures::FutureExt;
@@ -403,22 +403,37 @@ async fn advertise_receiving(
             ..Default::default()
         })
         .await?;
-    let ext_advertisement = adapter
-        .advertise(bluer::adv::Advertisement {
+    // Optional advertising must not block RFCOMM acceptance or the UKEY2 handshake.
+    let adapter = adapter.clone();
+    let ext_advertisement = background_advertisement(async move {
+        Ok(adapter.advertise(bluer::adv::Advertisement {
             advertisement_type: bluer::adv::Type::Broadcast,
             service_data: [(service, ext_payload)].into(),
             secondary_channel: Some(bluer::adv::SecondaryChannel::OneM),
             min_interval: Some(Duration::from_millis(100)),
             max_interval: Some(Duration::from_millis(250)),
             ..Default::default()
-        })
-        .await
-        .ok();
-    info!(
-        "Nearby receiving BLE advertisement active (extended_adv={})",
-        ext_advertisement.is_some()
-    );
+        }).await?)
+    });
+    info!("Nearby receiving BLE advertisement active (extended advertisement pending separately)");
     Ok((app, advertisement, ext_advertisement))
+}
+
+fn background_advertisement<T: Send + 'static>(
+    registration: impl std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+) -> tokio_util::task::AbortOnDropHandle<Option<T>> {
+    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        match registration.await {
+            Ok(handle) => {
+                info!("Optional extended receiving BLE advertisement active");
+                Some(handle)
+            }
+            Err(error) => {
+                warn!("Optional extended receiving BLE advertisement unavailable: {error}");
+                None
+            }
+        }
+    }))
 }
 
 pub(crate) async fn run(
@@ -560,6 +575,32 @@ pub(crate) async fn connect(
 mod tests {
     use super::*;
     use crate::utils::gen_mdns_endpoint_info;
+
+    #[tokio::test]
+    async fn stalled_optional_advertisement_does_not_block_and_is_cancelled_on_drop() {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        struct Registration(Option<oneshot::Sender<()>>);
+        impl Drop for Registration {
+            fn drop(&mut self) { let _ = self.0.take().unwrap().send(()); }
+        }
+        let task = background_advertisement(async move {
+            let _registration = Registration(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<anyhow::Result<()>>().await
+        });
+        tokio::time::timeout(Duration::from_secs(1), started_rx).await.unwrap().unwrap();
+        assert!(!task.is_finished());
+        // The caller remains available to accept connections while registration hangs.
+        drop(task);
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx).await.unwrap().unwrap();
+
+        let (released_tx, released_rx) = oneshot::channel();
+        let task = background_advertisement(async { Ok(Registration(Some(released_tx))) });
+        while !task.is_finished() { tokio::task::yield_now().await; }
+        drop(task);
+        tokio::time::timeout(Duration::from_secs(1), released_rx).await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn connection_preserves_service_errors_and_targets_the_selected_device() {

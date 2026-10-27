@@ -2,6 +2,8 @@
 
 ## Incoming handshake compatibility — 2026-10-27
 
+- Register the optional extended BLE advertisement in the background, keeping RFCOMM acceptance and UKEY2 responsive while BlueZ is still registering it. Cancel the task and release completed advertisement handles when receive visibility ends. Verify pending-registration cancellation and completed-handle cleanup.
+
 - While awaiting attachment metadata, allow an early sharing ACCEPT response without advancing the receive state or skipping local consent. Reject malformed/denied responses and report their actual status instead of an ambiguous missing-introduction error.
 - Add regressions for ACCEPT followed by introduction and for missing, denied and unknown response statuses.
 
