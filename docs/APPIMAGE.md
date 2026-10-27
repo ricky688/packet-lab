@@ -17,7 +17,9 @@ chmod +x Packet_Lab-0.1.0-alpha.1-x86_64.AppImage
 ./Packet_Lab-0.1.0-alpha.1-x86_64.AppImage
 ```
 
-Enable Bluetooth and Wi-Fi. On Android, open Quick Share's receive screen.
+Enable Bluetooth and Wi-Fi. Opening or activating Packet Lab automatically enables
+receive visibility and starts discovery; scanning continues while its main window
+is visible. On Android, open Quick Share's receive screen.
 Drop files onto Packet Lab's outlined area, choose a recipient and accept on the
 receiving device. To receive on Linux, keep Packet Lab visible and accept its
 receive prompt. VPNs may stay enabled; their routing/firewall policy can still

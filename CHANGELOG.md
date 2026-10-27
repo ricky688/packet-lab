@@ -1,5 +1,10 @@
 # Changelog
 
+## Foreground discovery — 2026-10-27
+
+- Start nearby-device discovery and enable receive visibility when Packet Lab is shown or activated; wait for service initialization before starting discovery. Keep scanning while the main window is visible and reuse discovered endpoints with fresh transfer state when opening the recipient picker.
+- Preserve explicit recipient selection and incoming-file consent. Background-only startup retains the saved visibility setting.
+
 ## AppImage alpha — 2026-10-27
 
 - Add a checksum-locked Ubuntu 24.04 AppImage build with GTK 4.22/libadwaita 1.9, dependency and glibc-version validation, source archives and license notices.

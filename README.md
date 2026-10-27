@@ -4,6 +4,12 @@ An experimental Linux Quick Share client based on [Packet](https://github.com/no
 
 Packet Lab has its own executable, application ID, settings, device name and log path, so it can run alongside Packet. It keeps the existing pairing, consent and encrypted transfer protocol.
 
+Opening Packet Lab or bringing it to the foreground enables receive visibility and
+starts nearby-device discovery automatically. Discovery continues while the main
+window is open, including after closing the recipient picker. You still choose a
+recipient and confirm incoming files. Receive visibility can be disabled in Preferences;
+bringing the app to the foreground enables it again.
+
 ## AppImage alpha
 
 The x86_64 AppImage bundles the GTK/libadwaita runtime for the Ubuntu 24.04 /

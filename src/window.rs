@@ -241,6 +241,7 @@ mod imp {
             #[cfg(target_os = "linux")]
             obj.setup_tray_icon();
             obj.setup_ui();
+            obj.setup_active_discovery();
             // GUI tests exercise local widgets without attaching to real sharing services.
             #[cfg(not(test))]
             {
@@ -1221,6 +1222,26 @@ impl Window {
         handle
     }
 
+    fn setup_active_discovery(&self) {
+        self.connect_visible_notify(|window| {
+            if window.is_visible() {
+                window.enable_active_discovery();
+            } else if !window.imp().is_recipients_dialog_opened.get() {
+                window.stop_mdns_discovery();
+            }
+        });
+        self.connect_is_active_notify(|window| {
+            if window.is_active() {
+                window.enable_active_discovery();
+            }
+        });
+    }
+
+    fn enable_active_discovery(&self) {
+        self.imp().device_visibility_switch.set_active(true);
+        self.start_mdns_discovery(None);
+    }
+
     fn setup_ui(&self) {
         self.setup_bottom_bar();
 
@@ -1360,9 +1381,16 @@ impl Window {
             return;
         }
 
-        // Clear previous recipients
-        imp.send_transfers_id_cache.blocking_lock().clear();
+        // Retain discovered endpoints but reset transfer state for the new payload.
+        let mut cache = imp.send_transfers_id_cache.blocking_lock();
         imp.recipient_model.remove_all();
+        for state in cache.values_mut() {
+            let fresh = SendRequestState::new();
+            fresh.set_endpoint_info(state.endpoint_info());
+            imp.recipient_model.append(&fresh);
+            *state = fresh;
+        }
+        drop(cache);
 
         imp.obj().start_mdns_discovery(None);
 
@@ -1639,7 +1667,9 @@ impl Window {
             imp,
             move |_| {
                 imp.is_recipients_dialog_opened.set(false);
-                imp.obj().stop_mdns_discovery();
+                if !imp.obj().is_visible() {
+                    imp.obj().stop_mdns_discovery();
+                }
                 *imp.send_text.borrow_mut() = None;
             }
         ));
@@ -2113,6 +2143,10 @@ impl Window {
 
     fn start_mdns_discovery(&self, force: Option<bool>) {
         let imp = self.imp();
+        // Presentation can precede asynchronous service initialization.
+        if imp.root_stack.visible_child_name().as_deref() != Some("main_page") {
+            return;
+        }
 
         if (force.is_some() && force.unwrap_or_default())
             || (force.is_none() && !imp.is_mdns_discovery_on.get())
@@ -2654,6 +2688,10 @@ impl Window {
                     imp.root_stack.get().set_visible_child_name("main_page");
 
                     spawn_rqs_receiver_tasks(&imp);
+                    imp.obj().on_visibility_changed(imp.device_visibility_switch.is_active()).await;
+                    if imp.obj().is_visible() {
+                        imp.obj().start_mdns_discovery(None);
+                    }
 
                     Ok(())
                 }()
@@ -2967,6 +3005,9 @@ mod tests {
         app.register(gio::Cancellable::NONE).unwrap();
         let window = Window::new(&app);
         let imp = window.imp();
+        imp.root_stack.set_visible_child_name("rqs_error_status_page");
+        window.enable_active_discovery();
+        assert!(!imp.is_mdns_discovery_on.get(), "Discovery waits for service readiness");
         imp.root_stack.set_visible_child_name("main_page");
         imp.is_mdns_discovery_on.set(true); // This test exercises the picker without starting networking.
         let directory = std::env::temp_dir().join(format!("packet-drop-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -2976,7 +3017,11 @@ mod tests {
         std::fs::write(first.path().unwrap(), b"first").unwrap();
         std::fs::write(second.path().unwrap(), b"second").unwrap();
         window.set_title(Some("Packet Lab drop test"));
+        imp.device_visibility_switch.set_active(false);
         window.present();
+        assert!(imp.device_visibility_switch.is_active(), "Showing the window enables receive visibility");
+        window.enable_active_discovery();
+        assert!(imp.is_mdns_discovery_on.get(), "Activation retains an already running scan");
         let mut source = std::process::Command::new("python3")
             .args(["scripts/test-drag-source.py", first.uri().as_str(), second.uri().as_str()])
             .spawn().unwrap();
@@ -3000,6 +3045,8 @@ mod tests {
         }
         assert_eq!(imp.manage_files_model.n_items(), 2);
         assert!(imp.is_recipients_dialog_opened.get());
+        imp.select_recipients_dialog.emit_by_name::<()>("closed", &[]);
+        assert!(imp.is_mdns_discovery_on.get(), "Closing the picker keeps foreground discovery running");
         let drop_on = |widget: &gtk::Widget, files: &[gio::File]| {
             let replace = widget == imp.main_nav_content.upcast_ref::<gtk::Widget>();
             window.handle_dropped_files(files.to_vec(), replace)
@@ -3012,6 +3059,16 @@ mod tests {
         assert_eq!(imp.manage_files_model.n_items(), 2);
         assert!(drop_on(imp.manage_files_nav_content.upcast_ref(), &[first.clone()]));
         assert_eq!(imp.manage_files_model.n_items(), 2, "An existing file must not be duplicated");
+        imp.select_recipients_dialog.emit_by_name::<()>("closed", &[]);
+        let previous = SendRequestState::new();
+        previous.set_endpoint_info(objects::EndpointInfo(rqs_lib::EndpointInfo {
+            id: "test-peer".into(), name: Some("Test phone".into()), ..Default::default()
+        }));
+        imp.send_transfers_id_cache.blocking_lock().insert("test-peer".into(), previous.clone());
+        window.present_recipients_dialog();
+        let fresh = imp.recipient_model.item(0).unwrap().downcast::<SendRequestState>().unwrap();
+        assert_eq!(fresh.endpoint_info().id, "test-peer");
+        assert_ne!(fresh, previous, "A cached endpoint must get fresh state for a new payload");
         std::fs::remove_dir_all(directory).unwrap();
         imp.is_mdns_discovery_on.set(false);
         window.destroy();

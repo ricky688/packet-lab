@@ -19,7 +19,12 @@ for attempt in $(seq 1 100); do
     sleep 0.1
 done
 [ "$ready" = true ] || { cat "$log"; exit 1; }
-sleep 2
+for attempt in $(seq 1 100); do
+    grep -q 'Starting mDNS discovery task' "$log" && break
+    kill -0 "$pid" || { cat "$log"; exit 1; }
+    sleep 0.1
+done
+grep -q 'Starting mDNS discovery task' "$log" || { cat "$log"; exit 1; }
 kill -0 "$pid"
 if grep -E 'symbol lookup error|error while loading shared libraries|Gtk-CRITICAL|GLib-GObject-CRITICAL|panicked at' "$log"; then
     cat "$log"
@@ -28,4 +33,4 @@ fi
 LD_LIBRARY_PATH=/test/lib /test/gapplication action io.github.ricky688.PacketLab quit
 wait "$pid"
 trap - EXIT
-echo 'AppImage GTK startup, D-Bus registration and graceful quit passed without host GTK'
+echo 'AppImage GTK startup, automatic discovery, D-Bus registration and graceful quit passed without host GTK'
