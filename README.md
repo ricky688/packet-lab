@@ -41,6 +41,25 @@ The native bundle includes `packet-lab-send` (Python 3 with PyGObject/Gio requir
 
 Set the file pattern to `*`, enable all file categories, and leave directories disabled. Multi-selection and spaces in filenames are supported. The helper starts Packet Lab if needed and opens its recipient picker; it never chooses a recipient automatically. Keep the bundle in the same location or update the action's command after moving it.
 
+## Nemo right-click sharing
+
+From the extracted native bundle, run `./install-nemo-action` as your normal user.
+Select local files in Nemo, right-click and choose **Send with Packet Lab**.
+The action supports multiple files, starts Packet Lab if necessary and opens its
+recipient picker. It does not send automatically or show for folders.
+
+The action is installed in your XDG data directory under
+`nemo/actions/packet-lab.nemo_action`. Keep the bundle in place; run the installer
+again after moving it. Remove the action with `./install-nemo-action --uninstall`.
+No Nemo Python extension or administrator authorization is required.
+
+## Tray icon
+
+Enable the tray icon in Preferences. Left-click opens Packet Lab; right-click
+offers **Open** and **Exit**. A StatusNotifier-compatible desktop panel is required.
+The native bundle supplies its symbolic icon and publishes its icon directory
+to the panel, so it does not require a system-wide icon installation.
+
 VPNs can remain enabled, but successful local sharing depends on their routing/firewall policy. Local-interface sockets travel outside the VPN tunnel. For a peer that needs an explicitly selected Linux interface, start with `RQS_LAN_ROUTE='192.168.1.2%wlan0' ./packet-lab`. This applies only to that peer; other traffic keeps system routing. It does not override a VPN firewall or support a requirement that the file itself travel inside the VPN tunnel.
 
 ## Build and test
@@ -57,6 +76,18 @@ cargo test --locked -p rqs_lib --lib
 ```
 
 The package script creates a native archive and SHA-256 checksum in `dist/`. It does not install into system directories or modify the original Packet application. Local schema loading and resources are supplied by the bundle launcher.
+
+The optional cross-process drag regression additionally needs GTK3 PyGObject,
+Xvfb and libXtst. After generating the resources above, run it in an isolated bus
+and virtual display (it does not connect to Bluetooth or send any files):
+
+```sh
+GDK_BACKEND=x11 GIO_USE_VFS=local GSETTINGS_BACKEND=memory \
+  GSETTINGS_SCHEMA_DIR="$PWD/_build/data" GTK_A11Y=none \
+  DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/packet-lab-no-system-bus \
+  xvfb-run -a dbus-run-session --config-file="$PWD/scripts/test-ui-bus.conf" -- \
+  cargo test --locked --bin packet-lab window::tests::file_drops -- --ignored --nocapture
+```
 
 The portable folder does not install desktop or D-Bus activation entries. Portal host registration can warn that the app is not installed. Auto-start, background permissions and file-manager integration are not validated for this bundle; launch it directly and keep it open for testing.
 

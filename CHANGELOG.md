@@ -1,5 +1,12 @@
 # Changelog
 
+## File manager integration and desktop fixes — 2026-10-27
+
+- Read local `text/uri-list` drops directly instead of allowing GdkFileList to choose a failing portal transfer. Show a highlighted drop zone and report read failures. Bound the URI-list size and read timeout; reject remote URIs.
+- Verify a cross-process GTK3-to-GTK4 mouse drag with two files while the source also offers an invalid portal token. Dropping opens the recipient picker without selecting a recipient automatically.
+- Add an optional per-user Nemo right-click action using the existing bundle send helper, with installation/removal support and no Nemo Python extension dependency.
+- Supply the tray symbolic icon and its search path, and make left-click open the application while retaining the context menu.
+
 ## Wi-Fi handover and network authorization — 2026-10-26
 
 - Complete legacy Android Wi-Fi Direct client joining using authenticated SSID/PSK credentials, volatile NetworkManager profiles and validated address readiness while preserving station routing and DNS.
