@@ -1,5 +1,11 @@
 # Changelog
 
+## Fresh-device Bluetooth discovery — 2026-10-27
+
+- Cache resolved Nearby GATT slots by Bluetooth address and advertisement header, invalidating changed/removed entries. Avoid reconnecting and disconnecting unchanged slots during RFCOMM transfers; throttle unsuccessful probes.
+- Retry only transient BlueZ InProgress/br-connection-busy errors, within the existing connection deadline. Authentication failures remain immediate. GATT cleanup disconnects only connections established by its own probe and is time-bounded.
+- Add regressions for unchanged/changed GATT slots, failed reads, transient busy recovery, bounded retries and authentication rejection. Friend-side Pop!_OS hardware validation remains pending.
+
 ## Incoming handshake compatibility — 2026-10-27
 
 - Register the optional extended BLE advertisement in the background, keeping RFCOMM acceptance and UKEY2 responsive while BlueZ is still registering it. Cancel the task and release completed advertisement handles when receive visibility ends. Verify pending-registration cancellation and completed-handle cleanup.

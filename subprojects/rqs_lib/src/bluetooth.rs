@@ -102,9 +102,31 @@ fn is_fef3_gatt_slot_header(data: &[u8]) -> bool {
     slots >= 1 && data.len() == 13 + 4 * slots
 }
 
+type ReceivingEndpoint = ([u8; 4], DeviceType, String, Address);
+type GattSlotCache = std::sync::Mutex<HashMap<Address, (Vec<u8>, ReceivingEndpoint)>>;
+
+async fn cached_gatt_slot(
+    cache: &GattSlotCache,
+    address: Address,
+    header: &[u8],
+    read: impl std::future::Future<Output = anyhow::Result<Option<ReceivingEndpoint>>>,
+) -> anyhow::Result<Option<ReceivingEndpoint>> {
+    if let Some((previous, endpoint)) = cache.lock().unwrap().get(&address) {
+        if previous == header {
+            return Ok(Some(endpoint.clone()));
+        }
+    }
+    let result = read.await?;
+    if let Some(endpoint) = &result {
+        cache.lock().unwrap().insert(address, (header.to_vec(), endpoint.clone()));
+    }
+    Ok(result)
+}
+
 async fn resolve_ble_fef3_device(
     device: &bluer::Device,
     address: Address,
+    cache: &GattSlotCache,
 ) -> anyhow::Result<Option<([u8; 4], DeviceType, String, Address)>> {
     let service_data = device.service_data().await?.unwrap_or_default();
     let Some(data) = service_data.get(&FEF3_SERVICE_UUID) else {
@@ -118,7 +140,7 @@ async fn resolve_ble_fef3_device(
 
     // 2. Regular BLE advertisement header (Version 2 Bloom-filter + slot hashes): read GATT slots on 0xFEF3.
     if is_fef3_gatt_slot_header(data) {
-        return read_fef3_gatt_slots(device, address).await;
+        return cached_gatt_slot(cache, address, data, read_fef3_gatt_slots(device, address)).await;
     }
 
     Ok(None)
@@ -129,9 +151,14 @@ async fn read_fef3_gatt_slots(
     address: Address,
 ) -> anyhow::Result<Option<([u8; 4], DeviceType, String, Address)>> {
     let was_connected = device.is_connected().await.unwrap_or(false);
+    let mut connected_here = false;
     let attempt = async {
         if !was_connected {
-            let _ = device.connect().await;
+            if let Err(error) = retry_bluetooth_connection(|| device.connect()).await {
+                debug!("BLE FEF3 GATT connection failed for {address}: {error}");
+                return Ok(None);
+            }
+            connected_here = true;
         }
         for _ in 0..25 {
             if device.is_services_resolved().await.unwrap_or(false) {
@@ -165,8 +192,8 @@ async fn read_fef3_gatt_slots(
             Ok(None)
         }
     };
-    if !was_connected {
-        let _ = device.disconnect().await;
+    if connected_here {
+        let _ = tokio::time::timeout(Duration::from_secs(2), device.disconnect()).await;
     }
     out
 }
@@ -180,6 +207,8 @@ pub(crate) async fn discover(
     let events = adapter.discover_devices_with_changes().await?;
     pin_mut!(events);
     let mut known = HashMap::new();
+    let resolved = Arc::new(GattSlotCache::default());
+    let mut last_probe = HashMap::<Address, std::time::Instant>::new();
     let probing = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     loop {
         let event = tokio::select! {
@@ -284,6 +313,15 @@ pub(crate) async fn discover(
                     continue;
                 }
 
+                // Do not reconnect/disconnect a resolved slot during an outgoing RFCOMM session.
+                if resolved.lock().unwrap().get(&address).is_some_and(|(header, _)| header == data) {
+                    continue;
+                }
+                if last_probe.get(&address).is_some_and(|started| started.elapsed() < Duration::from_secs(6)) {
+                    continue;
+                }
+                last_probe.insert(address, std::time::Instant::now());
+                let resolved = resolved.clone();
                 // 2. Spawn GATT slot reader asynchronously so events.next() is NEVER blocked!
                 {
                     let mut lock = probing.lock().unwrap();
@@ -294,7 +332,7 @@ pub(crate) async fn discover(
                 }
 
                 tokio::spawn(async move {
-                    let res = resolve_ble_fef3_device(&device, address).await;
+                    let res = resolve_ble_fef3_device(&device, address, &resolved).await;
                     probing.lock().unwrap().remove(&address);
                     if let Ok(Some((id_bytes, kind, name, classic_mac))) = res {
                         let endpoint = String::from_utf8_lossy(&id_bytes).into_owned();
@@ -317,6 +355,8 @@ pub(crate) async fn discover(
                 });
             }
             AdapterEvent::DeviceRemoved(address) => {
+                resolved.lock().unwrap().remove(&address);
+                last_probe.remove(&address);
                 if let Some(mut info) = known.remove(&address) {
                     if info.id == format!("bluetooth://{address}") {
                         info.present = Some(false);
@@ -436,6 +476,25 @@ fn background_advertisement<T: Send + 'static>(
     }))
 }
 
+async fn retry_bluetooth_connection<F, Fut>(mut attempt: F) -> bluer::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bluer::Result<()>>,
+{
+    for retry in 0..=8 {
+        match attempt().await {
+            Err(error) if retry < 8 && (error.kind == bluer::ErrorKind::InProgress
+                || (matches!(error.kind, bluer::ErrorKind::Failed | bluer::ErrorKind::ConnectionAttemptFailed)
+                    && error.message.contains("br-connection-busy"))) => {
+                debug!("Nearby Bluetooth operation busy; retrying after controller settles ({retry}): {error}");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
 pub(crate) async fn run(
     endpoint: [u8; 4],
     encoded_info: String,
@@ -505,7 +564,7 @@ pub(crate) async fn run(
                                     }
                                     device
                                 };
-                                device.connect_profile(&SERVICE_UUID).await
+                                retry_bluetooth_connection(|| device.connect_profile(&SERVICE_UUID)).await
                             })
                                 .await.context("Nearby service connection timed out")?
                                 .with_context(|| format!("Nearby service on {target} is not accepting connections"))?;
@@ -575,6 +634,47 @@ pub(crate) async fn connect(
 mod tests {
     use super::*;
     use crate::utils::gen_mdns_endpoint_info;
+
+    #[tokio::test]
+    async fn unchanged_gatt_slots_do_not_reconnect_and_changed_slots_are_read() {
+        let cache = GattSlotCache::default();
+        let address = Address([2, 0, 0, 0, 0, 1]);
+        let endpoint = (*b"TEST", DeviceType::Phone, "Test phone".to_owned(), address);
+        let first = cached_gatt_slot(&cache, address, b"slot-a", async { Ok(Some(endpoint)) }).await.unwrap();
+        assert!(first.is_some());
+        let cached = cached_gatt_slot(&cache, address, b"slot-a", async { panic!("Unchanged slot must not reconnect") }).await.unwrap();
+        assert_eq!(cached.unwrap().2, "Test phone");
+        let updated = (*b"NEW!", DeviceType::Phone, "Updated phone".to_owned(), address);
+        let changed = cached_gatt_slot(&cache, address, b"slot-b", async { Ok(Some(updated)) }).await.unwrap();
+        assert_eq!(changed.unwrap().2, "Updated phone");
+        assert!(cached_gatt_slot(&cache, address, b"slot-c", async { Ok(None) }).await.unwrap().is_none());
+        assert!(cached_gatt_slot(&cache, address, b"slot-c", async { Err(anyhow!("probe failed")) }).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn profile_connection_retries_busy_but_not_authentication_failures() {
+        let mut calls = 0;
+        retry_bluetooth_connection(|| {
+            calls += 1;
+            std::future::ready(if calls <= 2 {
+                Err(bluer::Error { kind: bluer::ErrorKind::Failed, message: "br-connection-busy".into() })
+            } else { Ok(()) })
+        }).await.unwrap();
+        assert_eq!(calls, 3);
+        calls = 0;
+        let result = retry_bluetooth_connection(|| {
+            calls += 1;
+            std::future::ready(Err(bluer::Error { kind: bluer::ErrorKind::AuthenticationRejected, message: "Rejected".into() }))
+        }).await;
+        assert_eq!(result.unwrap_err().kind, bluer::ErrorKind::AuthenticationRejected);
+        assert_eq!(calls, 1);
+        calls = 0;
+        assert!(retry_bluetooth_connection(|| {
+            calls += 1;
+            std::future::ready(Err(bluer::Error { kind: bluer::ErrorKind::InProgress, message: "busy".into() }))
+        }).await.is_err());
+        assert_eq!(calls, 9, "Busy retry must remain bounded");
+    }
 
     #[tokio::test]
     async fn stalled_optional_advertisement_does_not_block_and_is_cancelled_on_drop() {

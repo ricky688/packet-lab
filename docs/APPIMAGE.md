@@ -117,3 +117,13 @@ The AppImage has not yet been verified with real phone transfers, Wi-Fi Direct,
 Nemo mouse/menu interaction or other distributions. Earlier native-bundle phone
 tests do not establish those AppImage results. The isolated container tests have
 no Bluetooth/Wi-Fi hardware or host network services.
+
+## First use with another person's phone
+
+Bluetooth pairing is not required for discovery. Keep the phone unlocked, enable
+Bluetooth and Wi-Fi, and open Quick Share's receive screen with visibility set to
+Everyone (10 minutes), rather than contacts-only. Packet Lab must be open.
+The app retries brief BlueZ busy errors automatically; it does not bypass pairing
+authorization or Quick Share receive confirmation. If discovery still fails,
+record the Linux distribution, Bluetooth adapter and Packet Lab log from that PC;
+a successful test on another PC does not verify its Bluetooth driver.
