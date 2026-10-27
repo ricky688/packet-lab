@@ -241,11 +241,15 @@ mod imp {
             #[cfg(target_os = "linux")]
             obj.setup_tray_icon();
             obj.setup_ui();
-            obj.setup_connection_monitors();
-            obj.setup_notification_actions_monitor();
-            obj.setup_rqs_service();
-            obj.request_background_at_start();
-            obj.setup_dbus_api();
+            // GUI tests exercise local widgets without attaching to real sharing services.
+            #[cfg(not(test))]
+            {
+                obj.setup_connection_monitors();
+                obj.setup_notification_actions_monitor();
+                obj.setup_rqs_service();
+                obj.request_background_at_start();
+                obj.setup_dbus_api();
+            }
         }
     }
 
@@ -1435,6 +1439,59 @@ impl Window {
         ));
     }
 
+    fn handle_dropped_files(&self, files: Vec<gio::File>, replace: bool) -> bool {
+        let imp = self.imp();
+        if files.is_empty() { return false; }
+        if replace { imp.manage_files_model.remove_all(); }
+        let accepted = self.handle_added_files_to_send(&imp.manage_files_model, files);
+        if accepted {
+            *imp.send_text.borrow_mut() = None;
+            self.present_recipients_dialog();
+        }
+        accepted
+    }
+
+    fn setup_file_drop(&self, widget: &gtk::Widget, replace: bool) {
+        widget.add_css_class("file-drop-zone");
+        // Request raw URIs: GdkFileList can choose a broken portal transfer before our callback.
+        let target = gtk::DropTargetAsync::new(
+            Some(gdk::ContentFormats::new(&["text/uri-list"])), gdk::DragAction::COPY);
+        target.connect_drag_enter(|_, _, _, _| gdk::DragAction::COPY);
+        target.connect_drag_motion(|_, _, _, _| gdk::DragAction::COPY);
+        target.connect_drop(clone!(#[weak(rename_to = this)] self, #[upgrade_or] false,
+            move |_, drop, _, _| {
+                let drop = drop.clone();
+                glib::spawn_future_local(clone!(#[weak] this, async move {
+                    let read = async {
+                        let (stream, _) = drop.read_future(&["text/uri-list"], glib::Priority::default()).await?;
+                        let mut data = Vec::new();
+                        loop {
+                            let chunk = stream.read_bytes_future(8192, glib::Priority::default()).await?;
+                            if chunk.is_empty() { break; }
+                            anyhow::ensure!(data.len() + chunk.len() <= 1024 * 1024, "File list is too large");
+                            data.extend_from_slice(&chunk);
+                        }
+                        crate::file_drop::parse_files(&data)
+                    };
+                    let result = futures_lite::future::or(read, async {
+                        glib::timeout_future_seconds(10).await;
+                        Err(anyhow!("Timed out reading dropped files"))
+                    }).await;
+                    let accepted = match result {
+                        Ok(files) => this.handle_dropped_files(files, replace),
+                        Err(error) => {
+                            tracing::warn!(%error, "Could not read dropped files");
+                            add_toast(this.upcast_ref(), adw::Toast::new(&gettext("Couldn't open dropped files")));
+                            false
+                        }
+                    };
+                    drop.finish(if accepted { gdk::DragAction::COPY } else { gdk::DragAction::empty() });
+                }));
+                true
+            }));
+        widget.add_controller(target);
+    }
+
     fn setup_main_page(&self) {
         let imp = self.imp();
 
@@ -1447,36 +1504,7 @@ impl Window {
             }
         ));
 
-        let files_drop_target = gtk::DropTarget::builder()
-            .name("add-files-drop-target")
-            .actions(gdk::DragAction::COPY)
-            .formats(&gdk::ContentFormats::for_type(gdk::FileList::static_type()))
-            .build();
-        imp.main_nav_content
-            .get()
-            .add_controller(files_drop_target.clone());
-        files_drop_target.connect_drop(clone!(
-            #[weak]
-            imp,
-            #[upgrade_or]
-            false,
-            move |_, value, _, _| {
-                let Ok(file_list) = value.get::<gdk::FileList>() else {
-                    return false;
-                };
-                if file_list.files().is_empty() {
-                    return false;
-                }
-                imp.manage_files_model.remove_all();
-                let accepted = imp.obj()
-                    .handle_added_files_to_send(&imp.manage_files_model, file_list.files());
-                if accepted {
-                    *imp.send_text.borrow_mut() = None;
-                    imp.obj().present_recipients_dialog();
-                }
-                accepted
-            }
-        ));
+        self.setup_file_drop(imp.main_nav_content.upcast_ref(), true);
 
         // Ctrl+V on main page
         let key_controller = gtk::EventControllerKey::new();
@@ -1579,35 +1607,7 @@ impl Window {
             }
         ));
 
-        let manage_files_add_drop_target = gtk::DropTarget::builder()
-            .name("manage-files-add-drop-target")
-            .actions(gdk::DragAction::COPY)
-            .formats(&gdk::ContentFormats::for_type(gdk::FileList::static_type()))
-            .build();
-        imp.manage_files_nav_content
-            .get()
-            .add_controller(manage_files_add_drop_target.clone());
-        manage_files_add_drop_target.connect_drop(clone!(
-            #[weak]
-            imp,
-            #[upgrade_or]
-            false,
-            move |_, value, _, _| {
-                let Ok(file_list) = value.get::<gdk::FileList>() else {
-                    return false;
-                };
-                if file_list.files().is_empty() {
-                    return false;
-                }
-                let accepted = imp.obj()
-                    .handle_added_files_to_send(&imp.manage_files_model, file_list.files());
-                if accepted {
-                    *imp.send_text.borrow_mut() = None;
-                    imp.obj().present_recipients_dialog();
-                }
-                accepted
-            }
-        ));
+        self.setup_file_drop(imp.manage_files_nav_content.upcast_ref(), false);
 
         // TODO: Improve keyboard accessibility, make elements that can't be
         // activated non-focusable
@@ -2975,11 +2975,34 @@ mod tests {
         let second = gio::File::for_path(directory.join("second.txt"));
         std::fs::write(first.path().unwrap(), b"first").unwrap();
         std::fs::write(second.path().unwrap(), b"second").unwrap();
+        window.set_title(Some("Packet Lab drop test"));
+        window.present();
+        let mut source = std::process::Command::new("python3")
+            .args(["scripts/test-drag-source.py", first.uri().as_str(), second.uri().as_str()])
+            .spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            imp.root_stack.set_visible_child_name("main_page");
+            imp.is_mdns_discovery_on.set(true);
+            while glib::MainContext::default().pending() {
+                glib::MainContext::default().iteration(false);
+            }
+            if let Some(status) = source.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = source.kill();
+                let _ = source.wait();
+                panic!("Cross-process drag timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(imp.manage_files_model.n_items(), 2);
+        assert!(imp.is_recipients_dialog_opened.get());
         let drop_on = |widget: &gtk::Widget, files: &[gio::File]| {
-            let target = widget.observe_controllers().iter::<glib::Object>()
-                .filter_map(Result::ok).find_map(|controller| controller.downcast::<gtk::DropTarget>().ok()).unwrap();
-            let value = glib::BoxedValue(gdk::FileList::from_array(files).to_value());
-            target.emit_by_name::<bool>("drop", &[&value, &0.0f64, &0.0f64])
+            let replace = widget == imp.main_nav_content.upcast_ref::<gtk::Widget>();
+            window.handle_dropped_files(files.to_vec(), replace)
         };
         assert!(drop_on(imp.main_nav_content.upcast_ref(), &[first.clone(), second.clone()]));
         assert_eq!(imp.manage_files_model.n_items(), 2);
@@ -2987,9 +3010,10 @@ mod tests {
         assert_eq!(imp.recipient_model.n_items(), 0, "Dropping must not select or send to a recipient");
         assert!(!drop_on(imp.manage_files_nav_content.upcast_ref(), &[gio::File::for_path(&directory)]));
         assert_eq!(imp.manage_files_model.n_items(), 2);
-        assert!(drop_on(imp.manage_files_nav_content.upcast_ref(), &[first]));
+        assert!(drop_on(imp.manage_files_nav_content.upcast_ref(), &[first.clone()]));
         assert_eq!(imp.manage_files_model.n_items(), 2, "An existing file must not be duplicated");
         std::fs::remove_dir_all(directory).unwrap();
+        imp.is_mdns_discovery_on.set(false);
         window.destroy();
     }
 }

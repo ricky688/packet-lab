@@ -1,5 +1,6 @@
 mod application;
 mod manual_peer;
+mod file_drop;
 #[rustfmt::skip]
 mod config;
 mod constants;

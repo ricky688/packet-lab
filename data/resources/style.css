@@ -44,3 +44,13 @@
   background-color: alpha(var(--accent-bg-color), 0.22);
   color: var(--accent-color);
 }
+.file-drop-zone {
+  border: 2px dashed alpha(currentColor, 0.25);
+  border-radius: 12px;
+  margin: 12px;
+}
+
+.file-drop-zone:drop(active) {
+  border-color: var(--accent-color);
+  background-color: alpha(var(--accent-bg-color), 0.12);
+}
