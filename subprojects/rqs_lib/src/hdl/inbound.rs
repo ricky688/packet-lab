@@ -1016,11 +1016,7 @@ impl InboundRequest {
             false,
         )
         .await;
-        if self.upgrade.bluetooth {
-            if let Some(context) = &self.upgrade.context {
-                crate::bwu::spawn_host_preparation(context.port);
-            }
-        }
+        self.upgrade.prepare_direct();
 
         if !introduction.file_metadata.is_empty() && introduction.text_metadata.is_empty() {
             trace!("process_introduction: handling file_metadata");

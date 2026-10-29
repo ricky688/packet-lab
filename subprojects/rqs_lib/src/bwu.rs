@@ -27,6 +27,7 @@ use tokio::{
 const DEADLINE: Duration = Duration::from_secs(10);
 // Fast probe window for Wi-Fi LAN upgrade before falling back to Wi-Fi Hotspot / Direct.
 const LAN_UPGRADE_DEADLINE: Duration = Duration::from_millis(3500);
+const LAN_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 // Android may enable Wi-Fi and retry hotspot association for over 30 seconds.
 // Android aborted at 60s from handshake; leave time for fallback after its ~30s join attempt.
 const DIRECT_JOIN_DEADLINE: Duration = Duration::from_secs(40);
@@ -177,20 +178,6 @@ pub fn set_p2p_host_provider(provider: P2pHostProvider) {
     }
 }
 
-pub(crate) fn spawn_host_preparation(port: u16) {
-    let provider = P2P_HOST_PROVIDER
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone());
-    if let Some(provider) = provider {
-        tokio::spawn(async move {
-            if provider(port).await.is_some() {
-                info!("Direct Wi-Fi host prepared before transfer consent");
-            }
-        });
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct Context {
     pub endpoint: String,
@@ -198,6 +185,7 @@ pub(crate) struct Context {
     pub wifi_direct: Option<WifiDirectOffer>,
     pub port: u16,
     pending: Pending,
+    failed_lan: Arc<Mutex<HashMap<String, tokio::time::Instant>>>,
 }
 
 impl Context {
@@ -231,7 +219,22 @@ impl Context {
             wifi_direct: None,
             port,
             pending: Arc::default(),
+            failed_lan: Arc::default(),
         }
+    }
+
+    fn remember_lan_failure(&self, remote: &str) {
+        if remote.len() == 4 && remote.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            let mut failed = self.failed_lan.lock().unwrap();
+            failed.retain(|_, at| at.elapsed() < LAN_FAILURE_COOLDOWN);
+            failed.insert(remote.to_owned(), tokio::time::Instant::now());
+        }
+    }
+
+    fn lan_recently_failed(&self, remote: &str) -> bool {
+        let mut failed = self.failed_lan.lock().unwrap();
+        failed.retain(|_, at| at.elapsed() < LAN_FAILURE_COOLDOWN);
+        failed.contains_key(remote)
     }
 
     pub async fn resolve_wifi_direct(&self) -> Option<WifiDirectOffer> {
@@ -307,6 +310,8 @@ pub(crate) struct Upgrade {
     pub lan_attempted: bool,
     pub direct_failed: bool,
     pub direct_offered: Option<WifiDirectOffer>,
+    direct_preparation: Option<tokio::task::JoinHandle<Option<WifiDirectOffer>>>,
+    preparation_started: bool,
     pub next: Option<Transport>,
     pub waiting: Option<oneshot::Receiver<Transport>>,
     pub last_sent: bool,
@@ -340,6 +345,30 @@ pub(crate) enum Action {
 }
 
 impl Upgrade {
+    pub fn prepare_direct(&mut self) {
+        if self.preparation_started || !self.bluetooth || self.client_only || self.direct_failed
+            || self.direct_offered.is_some()
+        {
+            return;
+        }
+        let Some(context) = self.context.clone() else { return; };
+        self.preparation_started = true;
+        // Reuse this transfer's work; helpers retain their existing cleanup lifecycle.
+        self.direct_preparation = Some(tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            let offer = context.resolve_wifi_direct().await;
+            info!("Direct Wi-Fi preparation finished: ready={}, elapsed_ms={}",
+                offer.is_some(), started.elapsed().as_millis());
+            offer
+        }));
+    }
+
+    async fn prepared_direct_offer(&mut self) -> Option<WifiDirectOffer> {
+        self.prepare_direct();
+        self.direct_preparation.take()?.await
+            .inspect_err(|error| warn!("Direct Wi-Fi preparation task failed: {error}")).ok().flatten()
+    }
+
     pub fn uses_link_encryption(&self) -> bool {
         self.complete && self.link_encryption && self.active_medium == Some(Medium::WifiDirect)
     }
@@ -384,9 +413,14 @@ impl Upgrade {
         if !self.bluetooth || self.complete || self.waiting.is_some() || self.next.is_some() {
             return Ok(None);
         }
-        let Some(context) = self.context.as_ref() else {
+        let Some(context) = self.context.clone() else {
             return Ok(None);
         };
+        self.prepare_direct();
+        if !self.lan_attempted && context.lan_recently_failed(self.remote.as_deref().unwrap_or("")) {
+            self.lan_attempted = true;
+            info!("Skipping recently failed LAN path for this peer; trying direct Wi-Fi");
+        }
 
         // 1. Primary receiver offer: local Wi-Fi LAN if available and not yet failed/attempted.
         if !self.lan_attempted && !self.lan_failed && self.direct_offered.is_none() {
@@ -446,7 +480,7 @@ impl Upgrade {
                     direct.medium, direct.ssid, direct.gateway, direct.port, direct.frequency
                 );
                 return Ok(Some(Self::build_direct_offer_frame(direct)));
-            } else if let Some(direct) = context.resolve_wifi_direct().await {
+            } else if let Some(direct) = self.prepared_direct_offer().await {
                 if !matches!(direct.medium, Medium::WifiDirect | Medium::WifiHotspot)
                     || !direct.gateway.is_private()
                     || direct.ssid.is_empty()
@@ -531,6 +565,7 @@ impl Upgrade {
             && !self.last_received
         {
             if let Some(context) = &self.context {
+                context.remember_lan_failure(self.remote.as_deref().unwrap_or(""));
                 context
                     .pending
                     .lock()
@@ -826,6 +861,7 @@ impl Upgrade {
                         if self.direct_offered.is_some() || context.address != Some(address) {
                             bail!("Unsolicited or mismatched upgrade failure");
                         }
+                        context.remember_lan_failure(self.remote.as_deref().unwrap_or(""));
                         context
                             .pending
                             .lock()
@@ -907,6 +943,11 @@ impl Upgrade {
         *old = self.next.take().context("No pending Wi-Fi connection")?;
         self.complete = true;
         self.deadline = None;
+        if self.active_medium == Some(Medium::WifiLan) {
+            if let Some(context) = &self.context {
+                context.failed_lan.lock().unwrap().remove(self.remote.as_deref().unwrap_or(""));
+            }
+        }
         info!("Bluetooth -> Wi-Fi: handover complete; link_encryption={}, UKEY2 context retained",
             self.uses_link_encryption());
         Ok(())
@@ -965,6 +1006,79 @@ async fn read_plain(stream: &mut Transport) -> anyhow::Result<wire::OfflineFrame
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_direct_context() -> Context {
+        let mut context = Context::new(*b"HOST", 9300);
+        context.address = Some("192.168.1.50:9300".parse().unwrap());
+        context.wifi_direct = Some(WifiDirectOffer {
+            medium: Medium::WifiHotspot, ssid: "PacketLab-prepared".into(),
+            password: "testpassword".into(), gateway: Ipv4Addr::new(192, 168, 49, 1),
+            port: 9300, frequency: 5180,
+        });
+        context
+    }
+
+    #[tokio::test]
+    async fn direct_preparation_is_reused_when_lan_times_out() {
+        let context = test_direct_context();
+        let mut upgrade = Upgrade::default();
+        upgrade.bluetooth = true;
+        upgrade.remote = Some("PEER".into());
+        upgrade.context = Some(context.clone());
+        upgrade.prepare_direct();
+        let task = upgrade.direct_preparation.as_ref().unwrap().id();
+        upgrade.prepare_direct();
+        assert_eq!(upgrade.direct_preparation.as_ref().unwrap().id(), task);
+        // A second provider resolution would use this changed configuration.
+        upgrade.context.as_mut().unwrap().wifi_direct.as_mut().unwrap().ssid = "Must-not-restart".into();
+        assert!(upgrade.offer().await.unwrap().is_some());
+        assert_eq!(upgrade.active_medium, Some(Medium::WifiLan));
+        let direct = tokio::time::timeout(Duration::from_secs(1), upgrade.on_deadline_expired()).await.unwrap().unwrap().unwrap();
+        let path = direct.v1.unwrap().bandwidth_upgrade_negotiation.unwrap().upgrade_path_info.unwrap();
+        assert_eq!(path.wifi_hotspot_credentials.unwrap().ssid(), "PacketLab-prepared");
+        assert!(context.lan_recently_failed("PEER"));
+    }
+
+    #[tokio::test]
+    async fn recent_lan_failure_skips_only_the_same_peer_and_expires() {
+        let context = test_direct_context();
+        context.remember_lan_failure("PEER");
+        let mut upgrade = Upgrade::default();
+        upgrade.bluetooth = true;
+        upgrade.remote = Some("PEER".into());
+        upgrade.context = Some(context.clone());
+        upgrade.offer().await.unwrap().unwrap();
+        assert_eq!(upgrade.active_medium, Some(Medium::WifiHotspot));
+        drop(upgrade);
+        let mut other = Upgrade::default();
+        other.bluetooth = true;
+        other.remote = Some("OTHR".into());
+        other.context = Some(context.clone());
+        other.offer().await.unwrap().unwrap();
+        assert_eq!(other.active_medium, Some(Medium::WifiLan));
+        drop(other);
+        context.failed_lan.lock().unwrap().insert("PEER".into(), tokio::time::Instant::now() - LAN_FAILURE_COOLDOWN);
+        let mut retry = Upgrade::default();
+        retry.bluetooth = true;
+        retry.remote = Some("PEER".into());
+        retry.context = Some(context.clone());
+        retry.offer().await.unwrap().unwrap();
+        assert_eq!(retry.active_medium, Some(Medium::WifiLan));
+        assert!(!context.lan_recently_failed("PEER"));
+        assert!(!test_direct_context().lan_recently_failed("PEER"), "Network restart gets a fresh context");
+        context.remember_lan_failure("");
+        assert!(!context.lan_recently_failed(""));
+    }
+
+    #[tokio::test]
+    async fn client_only_upgrade_does_not_start_privileged_host_preparation() {
+        let mut upgrade = Upgrade::default();
+        upgrade.bluetooth = true;
+        upgrade.client_only = true;
+        upgrade.context = Some(test_direct_context());
+        upgrade.prepare_direct();
+        assert!(upgrade.direct_preparation.is_none());
+    }
+
     #[test]
     fn failed_lan_keeps_old_channel_and_reports_the_rejected_path() {
         let mut upgrade = Upgrade::default();

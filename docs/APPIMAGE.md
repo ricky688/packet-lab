@@ -127,3 +127,13 @@ The app retries brief BlueZ busy errors automatically; it does not bypass pairin
 authorization or Quick Share receive confirmation. If discovery still fails,
 record the Linux distribution, Bluetooth adapter and Packet Lab log from that PC;
 a successful test on another PC does not verify its Bluetooth driver.
+
+## Handover latency
+
+Direct-host preparation is shared within each incoming transfer, so preparation
+can overlap receive confirmation and the LAN attempt. A validated LAN rejection
+or timeout is remembered for that peer for 30 seconds within the current sharing
+service; repeated transfers can try the direct host immediately. Another peer,
+expiry or a network-service restart restores the normal LAN attempt. Existing
+connection deadlines and receive consent are retained. This optimization does not
+guarantee a particular Wi-Fi Direct setup time on every adapter or VPN.

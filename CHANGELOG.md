@@ -1,5 +1,11 @@
 # Changelog
 
+## Faster handover preparation — 2026-10-29
+
+- Reuse one direct Wi-Fi preparation task per incoming transfer, overlapping preparation with receive confirmation and the existing LAN attempt. Keep client-only sessions from starting a local privileged host.
+- Remember validated LAN rejections/timeouts for the same peer in the current service context for 30 seconds, allowing immediate direct-host offers on closely repeated transfers. Expiry, a new peer, or network-service restart restores normal LAN probing; successful LAN handover clears the failure entry.
+- Preserve existing LAN and direct-join timeout limits, encryption and receive consent. Add preparation timing logs and regressions for task reuse, per-peer isolation, expiry and client-only behavior (63 communication-library tests passed). Hardware latency and VPN coexistence measurements remain pending.
+
 ## Fresh-device Bluetooth discovery — 2026-10-27
 
 - Cache resolved Nearby GATT slots by Bluetooth address and advertisement header, invalidating changed/removed entries. Avoid reconnecting and disconnecting unchanged slots during RFCOMM transfers; throttle unsuccessful probes.
