@@ -140,6 +140,7 @@ pub mod imp {
         pub eta: Rc<RefCell<utils::DataTransferEta>>,
         pub files: Rc<RefCell<Vec<String>>>,
         pub text: Rc<RefCell<Option<(String, rqs_lib::TextPayloadType)>>>,
+        pub alt_endpoint_info: Rc<RefCell<Option<EndpointInfo>>>,
 
         #[property(get, set)]
         transfer_state: RefCell<TransferState>,
@@ -185,6 +186,7 @@ impl SendRequestState {
         obj.set_endpoint_info(self.endpoint_info());
         obj.set_event(self.event());
         obj.set_device_name(self.device_name());
+        *obj.imp().alt_endpoint_info.borrow_mut() = self.imp().alt_endpoint_info.borrow().clone();
         *obj.imp().eta.borrow_mut() = self.imp().eta.borrow().clone();
         *obj.imp().files.borrow_mut() = self.imp().files.borrow().clone();
         *obj.imp().text.borrow_mut() = self.imp().text.borrow().clone();

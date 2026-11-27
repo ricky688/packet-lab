@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::anyhow;
 use base64::Engine;
@@ -177,28 +177,14 @@ pub fn gen_random(size: usize) -> Vec<u8> {
     data
 }
 
-pub fn get_download_dir() -> PathBuf {
-    let cdown = CUSTOM_DOWNLOAD.read();
-    match cdown {
-        Ok(mg) => {
-            if mg.is_some() {
-                return mg.as_ref().unwrap().to_path_buf();
-            }
-        }
-        Err(_) => {
-            // TODO
-        }
+pub fn get_download_dir() -> anyhow::Result<PathBuf> {
+    if let Ok(custom) = CUSTOM_DOWNLOAD.read()
+        && let Some(path) = custom.as_ref()
+    {
+        return Ok(path.clone());
     }
-
-    if let Some(user_dirs) = directories::UserDirs::new() {
-        if let Some(dd) = user_dirs.download_dir() {
-            return dd.to_path_buf();
-        }
-
-        return user_dirs.home_dir().to_path_buf();
-    }
-
-    Path::new("/").to_path_buf()
+    let user_dirs = directories::UserDirs::new().ok_or_else(|| anyhow::anyhow!("User home is unavailable"))?;
+    Ok(user_dirs.home_dir().join("Downloads"))
 }
 
 pub fn is_not_self_ip(ip_address: &Ipv4Addr) -> bool {

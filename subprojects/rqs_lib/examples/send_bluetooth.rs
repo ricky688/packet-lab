@@ -33,6 +33,8 @@ async fn main() -> anyhow::Result<()> {
                 endpoint_id: None,
                 id: id.clone(),
                 addr: id.clone(),
+                fallback_addr: None,
+                classic_fallback_addr: None,
                 name: "Explicit test phone".into(),
                 ob: OutboundPayload::Files(vec![file.to_string_lossy().into_owned()]),
             })

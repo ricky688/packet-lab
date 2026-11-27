@@ -349,11 +349,12 @@ impl OutboundRequest {
                         .serialize(),
                     ),
                     medium_metadata: Some(location_nearby_connections::MediumMetadata {
+                        supports_5_ghz: Some(true),
                         medium_role: Some(location_nearby_connections::MediumRole {
                             support_wifi_direct_group_owner: Some(false),
                             support_wifi_direct_group_client: Some(true),
-                            support_wifi_hotspot_host: Some(true),
-                            support_wifi_hotspot_client: Some(false),
+                            support_wifi_hotspot_host: Some(false),
+                            support_wifi_hotspot_client: Some(true),
                             ..Default::default()
                         }),
                         supported_wifi_direct_auth_types: vec![
@@ -600,6 +601,21 @@ impl OutboundRequest {
                 .bandwidth_upgrade_negotiation
                 .as_ref()
                 .ok_or_else(|| anyhow!("Missing upgrade negotiation"))?;
+            if self.completion_deadline.is_some() {
+                use crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::EventType;
+                if matches!(
+                    packet.event_type(),
+                    EventType::UpgradePathAvailable | EventType::UpgradePathRequest
+                ) {
+                    debug!(
+                        "Declining late {:?} after all payload chunks have already been sent",
+                        packet.event_type()
+                    );
+                    let failure = crate::bwu::event(EventType::UpgradeFailure);
+                    self.encrypt_and_send(&failure).await?;
+                }
+                return Ok(());
+            }
             match self.upgrade.handle(packet).await? {
                 crate::bwu::Action::Send(frames) => {
                     for frame in frames {
@@ -638,6 +654,10 @@ impl OutboundRequest {
                     .payload_header
                     .as_ref()
                     .ok_or_else(|| anyhow!("Missing required fields"))?;
+                if payload_transfer.packet_type() == PacketType::PayloadAck {
+                    debug!("Receiver sent PAYLOAD_ACK for payload {}", header.id());
+                    return Ok(());
+                }
                 if payload_transfer.packet_type() == PacketType::Control {
                     let control = payload_transfer
                         .control_message
@@ -736,8 +756,11 @@ impl OutboundRequest {
                 ));
             }
             location_nearby_connections::v1_frame::FrameType::KeepAlive => {
-                trace!("Sending keepalive");
-                self.send_keepalive(true).await?;
+                if let Some(keepalive) = &v1_frame.keep_alive {
+                    if !keepalive.ack() {
+                        self.send_keepalive(keepalive.seq_num).await?;
+                    }
+                }
             }
             location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry => {
                 if let Some(retry) = &v1_frame.bandwidth_upgrade_retry {
@@ -1006,12 +1029,16 @@ impl OutboundRequest {
         let intro_frame = if text_metadata.is_empty() {
             IntroductionFrame {
                 file_metadata,
+                start_transfer: Some(true),
+                use_case: Some(sharing_nearby::introduction_frame::SharingUseCase::NearbyShare.into()),
                 ..Default::default()
             }
         } else {
             IntroductionFrame {
                 file_metadata,
                 text_metadata,
+                start_transfer: Some(true),
+                use_case: Some(sharing_nearby::introduction_frame::SharingUseCase::NearbyShare.into()),
                 ..Default::default()
             }
         };
@@ -1027,6 +1054,86 @@ impl OutboundRequest {
 
         self.send_encrypted_frame(&introduction).await?;
 
+        Ok(())
+    }
+
+    /// Send one tiny 4 KiB initial file chunk over Bluetooth right after the peer taps Accept
+    /// so Android/Samsung Quick Share immediately leaves the Accept/Reject dialog and enters its
+    /// receiving progress UI while the remaining payload waits for Wi-Fi LAN / Wi-Fi Direct handover.
+    async fn send_initial_file_kickoff_chunk(&mut self) -> Result<(), anyhow::Error> {
+        const KICKOFF_BYTES: usize = 4 * 1024;
+        if self.upgrade.last_sent || self.upgrade.complete {
+            return Ok(());
+        }
+        let Some(&payload_id) = self.state.transferred_files.keys().next() else {
+            return Ok(());
+        };
+        let (file_name, total_size, chunk) = {
+            let Some(curr_state) = self.state.transferred_files.get_mut(&payload_id) else {
+                return Ok(());
+            };
+            if curr_state.bytes_transferred != 0 || curr_state.total_size <= KICKOFF_BYTES as i64 {
+                return Ok(());
+            }
+            let Some(file) = curr_state.file.as_mut() else {
+                return Ok(());
+            };
+            let mut buffer = vec![0u8; KICKOFF_BYTES];
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                return Ok(());
+            }
+            buffer.truncate(bytes_read);
+            let file_name = curr_state
+                .file_url
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            (file_name, curr_state.total_size, buffer)
+        };
+        let bytes_read = chunk.len();
+        let payload_header = PayloadHeader {
+            id: Some(payload_id),
+            r#type: Some(payload_header::PayloadType::File.into()),
+            total_size: Some(total_size),
+            is_sensitive: Some(false),
+            file_name,
+            ..Default::default()
+        };
+        let wrapper = location_nearby_connections::OfflineFrame {
+            version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
+            v1: Some(location_nearby_connections::V1Frame {
+                r#type: Some(
+                    location_nearby_connections::v1_frame::FrameType::PayloadTransfer.into(),
+                ),
+                payload_transfer: Some(PayloadTransferFrame {
+                    packet_type: Some(PacketType::Data.into()),
+                    payload_chunk: Some(PayloadChunk {
+                        offset: Some(0),
+                        flags: Some(0),
+                        body: Some(chunk),
+                    }),
+                    payload_header: Some(payload_header),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+        info!(
+            "Sending initial {bytes_read}-byte kickoff chunk (payload_id={payload_id}) so receiver UI enters progress mode during Wi-Fi upgrade"
+        );
+        self.encrypt_and_send(&wrapper).await?;
+        self.update_state(
+            |e| {
+                if let Some(mu) = e.transferred_files.get_mut(&payload_id) {
+                    mu.bytes_transferred += bytes_read as i64;
+                }
+                if let Some(tmd) = e.transfer_metadata.as_mut() {
+                    tmd.ack_bytes += bytes_read as u64;
+                }
+            },
+            false,
+        )
+        .await;
         Ok(())
     }
 
@@ -1051,8 +1158,11 @@ impl OutboundRequest {
                                 .state
                                 .transfer_metadata
                                 .as_ref()
-                                .is_some_and(|m| m.total_bytes >= 65_536)))
+                                .is_some_and(|m| m.total_bytes >= 1_000_000)))
                 {
+                    if !self.upgrade.last_sent {
+                        self.send_initial_file_kickoff_chunk().await?;
+                    }
                     self.deferred_consent = Some(v1_frame.clone());
                     if !self.upgrade.last_sent && self.upgrade.waiting.is_none() {
                         if let Some(offer) = self.upgrade.offer().await? {
@@ -1061,9 +1171,10 @@ impl OutboundRequest {
                             );
                             self.encrypt_and_send(&offer).await?;
                         } else if self.upgrade.client_only {
-                            self.upgrade.deadline = Some(Instant::now() + Duration::from_millis(3500));
+                            self.upgrade.deadline = Some(Instant::now() + Duration::from_secs(3));
                         }
                     }
+                    self.update_state(|_| {}, true).await;
                     return Ok(());
                 }
                 if self.upgrade.bluetooth && !self.upgrade.complete {
@@ -1673,12 +1784,12 @@ impl OutboundRequest {
         Ok(())
     }
 
-    async fn send_keepalive(&mut self, ack: bool) -> Result<(), anyhow::Error> {
+    async fn send_keepalive(&mut self, seq_num: Option<u32>) -> Result<(), anyhow::Error> {
         let ack_frame = location_nearby_connections::OfflineFrame {
             version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
             v1: Some(location_nearby_connections::V1Frame {
                 r#type: Some(location_nearby_connections::v1_frame::FrameType::KeepAlive.into()),
-                keep_alive: Some(KeepAliveFrame { ack: Some(ack) }),
+                keep_alive: Some(KeepAliveFrame { ack: Some(true), seq_num }),
                 ..Default::default()
             }),
         };
@@ -1741,7 +1852,17 @@ impl OutboundRequest {
     {
         f(&mut self.state);
         if let Some(tmd) = self.state.transfer_metadata.as_mut() {
-            tmd.transport_medium = Some(self.upgrade.medium_label().to_owned());
+            let label = self.upgrade.medium_label();
+            let effective = if self.deferred_consent.is_some()
+                && self.upgrade.bluetooth
+                && !self.upgrade.complete
+                && !label.starts_with("Upgrading")
+            {
+                "Upgrading to Wi-Fi…"
+            } else {
+                label
+            };
+            tmd.transport_medium = Some(effective.to_owned());
         }
 
         if !inform {
@@ -1870,7 +1991,7 @@ mod tests {
         request.upgrade.bluetooth = true;
         request.upgrade.last_sent = true;
         let sequence = request.state.server_seq;
-        request.send_keepalive(true).await.unwrap();
+        request.send_keepalive(None).await.unwrap();
         assert_eq!(request.state.server_seq, sequence);
         assert_eq!(request.upgrade.deferred.len(), 1);
         assert!(
@@ -2302,11 +2423,13 @@ mod tests {
         let offline = OfflineFrame::decode(buf.as_slice()).unwrap();
         let conn_req = offline.v1.unwrap().connection_request.unwrap();
         let metadata = conn_req.medium_metadata.unwrap();
+        assert_eq!(metadata.supports_5_ghz, Some(true));
         assert_eq!(metadata.supported_wifi_direct_auth_types, vec![1]);
         let roles = metadata.medium_role.unwrap();
         assert_eq!(roles.support_wifi_direct_group_owner, Some(false));
         assert_eq!(roles.support_wifi_direct_group_client, Some(true));
-        assert_eq!(roles.support_wifi_hotspot_client, Some(false));
+        assert_eq!(roles.support_wifi_hotspot_host, Some(false));
+        assert_eq!(roles.support_wifi_hotspot_client, Some(true));
         let mediums = conn_req.mediums;
         assert!(mediums.contains(&(Medium::WifiLan as i32)));
         assert!(mediums.contains(&(Medium::WifiDirect as i32)));
@@ -2368,5 +2491,57 @@ mod tests {
         drain_payload(&mut peer).await;
         assert_eq!(sender.state.state, TransferState::SendingFiles);
         assert!(sender.upgrade.deadline.is_none());
+    }
+
+    #[tokio::test]
+    async fn late_upgrade_after_payload_sent_is_declined_and_payload_ack_is_accepted() {
+        let (mut sender, mut peer) = text_sender().await;
+        sender.upgrade.bluetooth = true;
+        sender.process_consent(&consent()).await.unwrap();
+        drain_payload(&mut peer).await;
+        assert!(sender.completion_deadline.is_some());
+
+        // 1. Late UpgradePathAvailable after completion_deadline is set should be declined with UpgradeFailure
+        let late_offer = OfflineFrame {
+            version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
+            v1: Some(location_nearby_connections::V1Frame {
+                r#type: Some(
+                    location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeNegotiation
+                        .into(),
+                ),
+                bandwidth_upgrade_negotiation: Some(
+                    location_nearby_connections::BandwidthUpgradeNegotiationFrame {
+                        event_type: Some(
+                            location_nearby_connections::bandwidth_upgrade_negotiation_frame::EventType::UpgradePathAvailable.into(),
+                        ),
+                        ..Default::default()
+                    },
+                ),
+                ..Default::default()
+            }),
+        };
+        sender.process_offline_frame(&late_offer).await.unwrap();
+        assert!(peer.read_u32().await.unwrap() > 0);
+
+        // 2. PacketType::PayloadAck (3) should be accepted without requiring payload_chunk
+        let payload_ack = OfflineFrame {
+            version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
+            v1: Some(location_nearby_connections::V1Frame {
+                r#type: Some(
+                    location_nearby_connections::v1_frame::FrameType::PayloadTransfer.into(),
+                ),
+                payload_transfer: Some(PayloadTransferFrame {
+                    packet_type: Some(PacketType::PayloadAck.into()),
+                    payload_header: Some(PayloadHeader {
+                        id: Some(42),
+                        total_size: Some(4),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+        sender.process_offline_frame(&payload_ack).await.unwrap();
     }
 }

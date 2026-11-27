@@ -17,6 +17,8 @@ pub struct SendInfo {
     pub id: String,
     pub name: String,
     pub addr: String,
+    pub fallback_addr: Option<String>,
+    pub classic_fallback_addr: Option<String>,
     pub ob: OutboundPayload,
 }
 
@@ -115,6 +117,31 @@ impl TcpServer {
     }
 }
 
+fn connect_candidates(si: &SendInfo) -> Vec<String> {
+    let mut candidates = Vec::with_capacity(3);
+    for address in [
+        Some(&si.addr),
+        si.fallback_addr.as_ref(),
+        si.classic_fallback_addr.as_ref(),
+        si.id.starts_with("bluetooth://").then_some(&si.id),
+    ].into_iter().flatten() {
+        if !candidates.contains(address) {
+            candidates.push(address.clone());
+        }
+    }
+    // The LE PSM may be advertised while the peer is only accepting Classic connections.
+    if let Some(ble) = candidates.iter().position(|addr| addr.starts_with("ble-l2cap://"))
+        && let Some(classic) = candidates.iter().position(|addr| addr.starts_with("bluetooth://"))
+        && classic > ble
+        && candidates[ble].strip_prefix("ble-l2cap://")
+            .and_then(|route| route.split_once('/').map(|(address, _)| address))
+            != candidates[classic].strip_prefix("bluetooth://")
+    {
+        candidates.swap(ble, classic);
+    }
+    candidates
+}
+
 async fn connect_session(
     endpoint_id: [u8; 4],
     connector: Connector,
@@ -127,22 +154,68 @@ async fn connect_session(
     si: SendInfo,
 ) -> anyhow::Result<()> {
     debug!("{INNER_NAME}: Connecting to: {}", si.addr);
-    let attempt = async {
+    let try_connect = |target_addr: String| {
+        let connector = connector.clone();
         #[cfg(all(feature = "experimental", target_os = "linux"))]
-        if si.addr.starts_with("bluetooth://") {
-            return crate::bluetooth::connect(
-                bluetooth
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Bluetooth service unavailable"))?,
-                &si.addr,
-            )
-            .await;
+        let bluetooth = bluetooth.clone();
+        #[cfg(all(feature = "experimental", target_os = "linux"))]
+        let peer_endpoint = si.endpoint_id.as_deref();
+        #[cfg(all(feature = "experimental", target_os = "linux"))]
+        let token = ctk.clone();
+        async move {
+            #[cfg(all(feature = "experimental", target_os = "linux"))]
+            if target_addr.starts_with(crate::bluetooth::L2CAP_SCHEME) {
+                return crate::bluetooth::connect_l2cap(&target_addr, token).await;
+            }
+            #[cfg(all(feature = "experimental", target_os = "linux"))]
+            if target_addr.starts_with("bluetooth://") {
+                return crate::bluetooth::connect(
+                    bluetooth
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Bluetooth service unavailable"))?,
+                    &target_addr,
+                    peer_endpoint,
+                )
+                .await;
+            }
+            Ok::<_, anyhow::Error>(crate::transport::Transport::new(
+                connector.connect(&target_addr).await?,
+            ))
         }
-        Ok::<_, anyhow::Error>(crate::transport::Transport::new(
-            connector.connect(&si.addr).await?,
-        ))
     };
-    let socket = tokio::select! {
+
+    let candidates = connect_candidates(&si);
+    let attempt = async {
+        let mut errors = Vec::new();
+        #[cfg(all(feature = "experimental", target_os = "linux"))]
+        let mut radio_pause = None;
+        for (idx, target) in candidates.iter().enumerate() {
+            #[cfg(all(feature = "experimental", target_os = "linux"))]
+            if radio_pause.is_none() && (target.starts_with("bluetooth://") || target.starts_with(crate::bluetooth::L2CAP_SCHEME)) {
+                radio_pause = Some(crate::bluetooth::OutgoingConnectGuard::new());
+            }
+            match try_connect(target.clone()).await {
+                Ok(sock) => return Ok((sock, target.clone())),
+                Err(err) => {
+                    if let Some(next) = candidates.get(idx + 1) {
+                        info!("{INNER_NAME}: Medium {target} failed ({err}); attempting fallback to {next}");
+                    }
+                    errors.push((target.clone(), err));
+                }
+            }
+        }
+        if errors.len() == 1 {
+            Err(errors.pop().unwrap().1)
+        } else {
+            let summary = errors
+                .into_iter()
+                .map(|(target, err)| format!("({target}): {err}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(anyhow::anyhow!("All connection attempts failed: {summary}"))
+        }
+    };
+    let (socket, active_addr) = tokio::select! {
         _ = ctk.cancelled() => return Ok(()),
         result = attempt => result?,
     };
@@ -161,7 +234,7 @@ async fn connect_session(
 
     or.upgrade.context = upgrade;
     or.upgrade.remote = si.endpoint_id;
-    or.upgrade.bluetooth = si.addr.starts_with("bluetooth://");
+    or.upgrade.bluetooth = active_addr.starts_with("bluetooth://") || active_addr.starts_with("ble-l2cap://");
     // Send connection request
     or.send_connection_request().await?;
     // Send UKEY init
@@ -265,6 +338,8 @@ mod tests {
                 id: "outbound".into(),
                 name: "peer".into(),
                 addr: peer_listener.local_addr().unwrap().to_string(),
+                fallback_addr: None,
+                classic_fallback_addr: None,
                 ob: OutboundPayload::Files(vec![]),
             })
             .await
@@ -300,6 +375,8 @@ mod tests {
             id: "same-peer".into(),
             name: "peer".into(),
             addr: peer.local_addr().unwrap().to_string(),
+            fallback_addr: None,
+            classic_fallback_addr: None,
             ob: OutboundPayload::Files(vec![]),
         };
         requests.send(request.clone()).await.unwrap();
@@ -368,6 +445,8 @@ mod tests {
                 id: "manual-test".into(),
                 name: "Synthetic peer".into(),
                 addr: address,
+                fallback_addr: None,
+                classic_fallback_addr: None,
                 ob: OutboundPayload::Files(vec![]),
             })
             .await
@@ -387,5 +466,45 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    #[test]
+    fn connect_candidates_uses_classic_before_ble_when_the_advertisement_has_both() {
+        let info = SendInfo {
+            endpoint_id: Some("OVD3".into()),
+            id: "bluetooth://02:00:00:00:00:01".into(),
+            name: "Test Phone".into(),
+            addr: "ble-l2cap://02:00:00:00:00:02/le_random/129".into(),
+            fallback_addr: None,
+            classic_fallback_addr: None,
+            ob: OutboundPayload::Files(vec![]),
+        };
+        assert_eq!(
+            connect_candidates(&info),
+            vec![
+                "bluetooth://02:00:00:00:00:01",
+                "ble-l2cap://02:00:00:00:00:02/le_random/129",
+            ]
+        );
+        let le_only = SendInfo { id: "bluetooth://02:00:00:00:00:02".into(), ..info };
+        assert_eq!(connect_candidates(&le_only)[0], le_only.addr);
+
+        let merged = SendInfo {
+            endpoint_id: Some("OVD3".into()),
+            id: "192.0.2.10:41000".into(),
+            name: "Test Phone".into(),
+            addr: "192.0.2.10:41000".into(),
+            fallback_addr: Some("ble-l2cap://02:00:00:00:00:02/le_random/129".into()),
+            classic_fallback_addr: Some("bluetooth://02:00:00:00:00:01".into()),
+            ob: OutboundPayload::Files(vec![]),
+        };
+        assert_eq!(
+            connect_candidates(&merged),
+            vec![
+                "192.0.2.10:41000",
+                "bluetooth://02:00:00:00:00:01",
+                "ble-l2cap://02:00:00:00:00:02/le_random/129",
+            ]
+        );
     }
 }

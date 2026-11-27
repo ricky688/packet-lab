@@ -81,6 +81,20 @@ class AppImageTests(unittest.TestCase):
             sender.main()
             self.assertEqual(process.call_args.args[0], [str(self.image)])
 
+    def test_host_modes_use_real_go_or_hotspot_configuration(self):
+        spec = importlib.util.spec_from_file_location('ap_modes', SCRIPTS / 'wifi-ap-helper.py')
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        go = helper.supplicant_config('DIRECT-test', 'testpassword', 2412, True)
+        self.assertIn('p2p_disabled=0\n', go)
+        self.assertIn('p2p_no_group_iface=1\n', go)
+        self.assertIn('mode=3\n', go)
+        self.assertIn('frequency=2412\n', go)
+        ap = helper.supplicant_config('PacketLab-test', 'testpassword', 5620, False)
+        self.assertIn('p2p_disabled=1\n', ap)
+        self.assertIn('mode=2\n', ap)
+        self.assertNotIn('p2p_no_group_iface', ap)
+
     def test_privileged_helpers_search_only_fixed_system_directories(self):
         for name in ('wifi-ap-helper.py', 'wifi-p2p-client-helper.py'):
             loader = importlib.machinery.SourceFileLoader(name, str(SCRIPTS / name))

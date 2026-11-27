@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
+export PACKET_LAB_LAUNCHER="$root/packet-lab"
 export MESON_DEVENV=1
 export GSETTINGS_SCHEMA_DIR="$root/share/glib-2.0/schemas"
 export RESOURCE_FILE="$root/share/packet-lab/resources.gresource"

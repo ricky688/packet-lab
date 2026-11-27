@@ -23,9 +23,8 @@ use crate::dbus;
 use crate::ext::MessageExt;
 use crate::objects::{self, SendRequestState};
 use crate::objects::{TransferState, UserAction};
-use crate::plugins::{FileBasedPlugin, NautilusPlugin, Plugin};
 use crate::utils::toast::add_toast;
-use crate::utils::{SignalBlockGuard, is_url, strip_user_home_prefix, xdg_download_with_fallback};
+use crate::utils::{SignalBlockGuard, default_download_folder, is_url, strip_user_home_prefix};
 use crate::{monitors, tokio_runtime, widgets};
 
 #[derive(Debug)]
@@ -116,9 +115,6 @@ mod imp {
         pub auto_start_switch: TemplateChild<adw::SwitchRow>,
         pub auto_start_switch_handler_id: RefCell<Option<glib::SignalHandlerId>>,
         #[template_child]
-        pub nautilus_plugin_switch: TemplateChild<adw::SwitchRow>,
-        pub nautilus_plugin_switch_handler_id: RefCell<Option<glib::SignalHandlerId>>,
-        #[template_child]
         pub tray_icon_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub tray_icon_switch: TemplateChild<adw::SwitchRow>,
@@ -128,7 +124,7 @@ mod imp {
         #[template_child]
         pub main_nav_page: TemplateChild<adw::NavigationPage>,
         #[template_child]
-        pub main_nav_content: TemplateChild<adw::StatusPage>,
+        pub main_nav_content: TemplateChild<gtk::Box>,
         #[template_child]
         pub main_add_files_button: TemplateChild<gtk::Button>,
         #[template_child]
@@ -201,7 +197,6 @@ mod imp {
 
         pub is_recipients_dialog_opened: Cell<bool>,
 
-        pub nautilus_plugin: NautilusPlugin,
 
         #[cfg(target_os = "linux")]
         pub tray_icon_handle: RefCell<Option<ksni::Handle<crate::tray::Tray>>>,
@@ -258,7 +253,11 @@ mod imp {
     impl WindowImpl for Window {
         // Save window state on delete event
         fn close_request(&self) -> glib::Propagation {
-            if self.is_background_allowed.get()
+            if let Err(err) = self.obj().save_window_size() {
+                tracing::warn!("Failed to save window state, {}", &err);
+            }
+
+            if (!ashpd::is_sandboxed() || self.is_background_allowed.get())
                 && self.settings.boolean("run-in-background")
                 && !self.should_quit.get()
             {
@@ -269,9 +268,6 @@ mod imp {
 
             tracing::debug!("GtkApplicationWindow<Window>::close");
 
-            if let Err(err) = self.obj().save_window_size() {
-                tracing::warn!("Failed to save window state, {}", &err);
-            }
             if let Err(err) = self.obj().save_app_state() {
                 tracing::warn!("Failed to save app state, {}", &err);
             }
@@ -329,6 +325,7 @@ mod imp {
                             rqs.stop().await;
                         }
                     }
+                    crate::p2p::cleanup_wifi_direct_group().await;
 
                     tx.send(()).await.unwrap();
                 }
@@ -393,11 +390,15 @@ impl Window {
 
     fn load_app_state(&self) {
         let imp = self.imp();
-        if imp.settings.string("download-folder").is_empty() {
+        let saved = imp.settings.string("download-folder");
+        let folder = std::path::Path::new(saved.as_str());
+        if saved.is_empty() || folder.starts_with("/tmp") || folder.starts_with("/var/tmp")
+            || folder.starts_with(std::env::temp_dir())
+        {
             imp.settings
                 .set_string(
                     "download-folder",
-                    xdg_download_with_fallback().to_str().unwrap(),
+                    default_download_folder().to_str().unwrap(),
                 )
                 .unwrap();
         }
@@ -494,13 +495,6 @@ impl Window {
             .bind("auto-start", &imp.auto_start_switch.get(), "active")
             .build();
         imp.settings
-            .bind(
-                "enable-nautilus-plugin",
-                &imp.nautilus_plugin_switch.get(),
-                "active",
-            )
-            .build();
-        imp.settings
             .bind("enable-tray-icon", &imp.tray_icon_switch.get(), "active")
             .build();
 
@@ -528,89 +522,6 @@ impl Window {
                 device_name_entry.set_text(device_name);
             }
         }
-
-        if imp.settings.boolean("enable-nautilus-plugin") {
-            // Update plugin
-            // This takes care of cases of applying updates to the python extension
-            // script as well as reinstalling it if it got removed for some reason.
-            let plugin = imp.nautilus_plugin.clone();
-            glib::spawn_future_local(clone!(
-                #[weak]
-                imp,
-                async move {
-                    let success = tokio_runtime()
-                        .spawn_blocking(move || plugin.install_plugin())
-                        .await
-                        .map_err(|err| anyhow::anyhow!(err))
-                        .and_then(|it| it)
-                        .inspect_err(|err| tracing::error!("{err:#}"))
-                        .is_ok();
-
-                    if !success {
-                        add_toast(
-                            imp.obj().upcast_ref(),
-                            adw::Toast::new(&gettext("Couldn't update the Nautilus plugin")),
-                        );
-                    }
-                }
-            ));
-        }
-
-        let _signal_handle = imp.nautilus_plugin_switch.connect_active_notify(clone!(
-            #[weak]
-            imp,
-            move |switch| {
-                glib::spawn_future_local(clone!(
-                    #[weak]
-                    imp,
-                    #[weak]
-                    switch,
-                    async move {
-                        switch.set_sensitive(false);
-
-                        let enable_plugin = switch.is_active();
-
-                        tracing::info!(enable_plugin, "Setting Nautilus plugin state");
-
-                        let plugin = imp.nautilus_plugin.clone();
-                        let success = tokio_runtime()
-                            .spawn_blocking(move || {
-                                if enable_plugin {
-                                    plugin.install_plugin()
-                                } else {
-                                    plugin.uninstall_plugin()
-                                }
-                            })
-                            .await
-                            .map_err(|err| anyhow::anyhow!(err))
-                            .and_then(|it| it)
-                            .inspect_err(|err| tracing::error!("{err:#}"))
-                            .is_ok();
-
-                        if enable_plugin {
-                            if success {
-                                imp.obj().present_plugin_success_dialog();
-                            } else {
-                                imp.obj().present_plugin_error_dialog(
-                                        NautilusPlugin::help_install_dir(),
-                                    );
-                                {
-                                    let _g = SignalBlockGuard::new(
-                                        &switch,
-                                        &imp.nautilus_plugin_switch_handler_id,
-                                    );
-                                    switch.set_active(false);
-                                }
-                            }
-                        }
-
-                        switch.set_sensitive(true);
-                    }
-                ));
-            }
-        ));
-        imp.nautilus_plugin_switch_handler_id
-            .replace(Some(_signal_handle));
 
         #[cfg(target_os = "linux")]
         imp.tray_icon_switch.connect_active_notify(clone!(
@@ -641,6 +552,9 @@ impl Window {
             #[weak]
             imp,
             move |switch| {
+                if !ashpd::is_sandboxed() {
+                    return;
+                }
                 glib::spawn_future_local(clone!(
                     #[weak]
                     imp,
@@ -689,6 +603,16 @@ impl Window {
             #[weak]
             imp,
             move |switch| {
+                if !ashpd::is_sandboxed() {
+                    let enabled = switch.is_active();
+                    if let Err(error) = crate::autostart::set_enabled(enabled) {
+                        tracing::warn!(%error, "Could not update Packet Lab autostart");
+                        let _guard = SignalBlockGuard::new(switch, &imp.auto_start_switch_handler_id);
+                        switch.set_active(!enabled);
+                        add_toast(imp.preferences_dialog.upcast_ref(), adw::Toast::new(&gettext("Couldn't update Auto Start")));
+                    }
+                    return;
+                }
                 glib::spawn_future_local(clone!(
                     #[weak]
                     imp,
@@ -959,10 +883,10 @@ impl Window {
         // Check if we still have access to the set "Downloads Folder"
         {
             let download_folder = imp.settings.string("download-folder");
-            let download_folder_exists = std::fs::exists(&download_folder).unwrap_or_default();
+            let download_folder_exists = std::path::Path::new(download_folder.as_str()).is_dir();
 
             if !download_folder_exists {
-                let fallback = xdg_download_with_fallback();
+                let fallback = default_download_folder();
 
                 tracing::warn!(
                     ?download_folder,
@@ -1064,6 +988,15 @@ impl Window {
     }
 
     fn request_background_at_start(&self) {
+        if !ashpd::is_sandboxed() {
+            if self.imp().settings.boolean("auto-start")
+                && let Err(error) = crate::autostart::set_enabled(true)
+            {
+                tracing::warn!(%error, "Could not update Packet Lab autostart");
+                add_toast(self.upcast_ref(), adw::Toast::new(&gettext("Couldn't update Auto Start")));
+            }
+            return;
+        }
         let is_run_in_background = self.imp().settings.boolean("run-in-background");
         if !is_run_in_background {
             return;
@@ -1162,11 +1095,11 @@ impl Window {
     async fn disable_tray_icon(&self) {
         let imp = self.imp();
 
-        if let Some(ref mut handle) = *imp.tray_icon_handle.borrow_mut() {
+        let handle = imp.tray_icon_handle.take();
+        if let Some(handle) = handle {
             tracing::debug!("Disabling tray icon");
             handle.shutdown().await;
         }
-        imp.tray_icon_handle.take();
     }
 
     #[cfg(target_os = "linux")]
@@ -1182,7 +1115,7 @@ impl Window {
             #[weak]
             imp,
             async move {
-                let tray = crate::tray::Tray { tx: tx };
+                let tray = tray::Tray { tx };
                 let handle = tray
                     .disable_dbus_name(ashpd::is_sandboxed())
                     // Fixes missing tray icon when the app is launched early via autostart on some desktop
@@ -1209,10 +1142,7 @@ impl Window {
                             imp.obj().present();
                         }
                         tray::TrayMessage::Quit => {
-                            imp.should_quit.replace(true);
-                            // FIXME: If preference window is opened, that window gets closed instead of
-                            // Window for some reason
-                            imp.obj().close();
+                            let _ = imp.obj().upcast_ref::<gtk::Widget>().activate_action("app.quit", None);
                         }
                     }
                 }
@@ -1252,105 +1182,6 @@ impl Window {
         self.setup_share_text_page();
     }
 
-    fn present_plugin_success_dialog(&self) {
-        let dialog = adw::AlertDialog::builder()
-            .heading(&gettext("Plugin Installed"))
-            .default_response("done")
-            .build();
-
-        dialog.add_response("done", &gettext("Done"));
-        dialog.set_response_appearance("done", adw::ResponseAppearance::Suggested);
-
-        let info_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .halign(gtk::Align::Center)
-            .spacing(8)
-            .build();
-        dialog.set_extra_child(Some(&info_box));
-
-        let pkg_info_label = gtk::Label::builder()
-            .use_markup(true)
-            .wrap(true)
-            .label(
-                &formatx!(
-                    gettext(
-                        "The plugin was installed successfully, but requires the \
-                        following packages to function: {}"
-                    ),
-                    "<tt>nautilus-python, python-dbus</tt>",
-                )
-                .unwrap_or_default(),
-            )
-            .build();
-        info_box.append(&pkg_info_label);
-
-        let pkg_info_link_label = gtk::Label::builder()
-            .use_markup(true)
-            .wrap(true)
-            .label(
-                &formatx!(
-                    gettext(
-                        "Package names may vary by distribution, visit <a {}>this \
-                        link</a> for details."
-                    ),
-                    // Keeping it out of the msgid so that translators are less
-                    // likely to mess something in here
-                    "href=\"https://github.com/nozwock/packet?tab=readme-ov-file#plugin-requirements\""
-                )
-                .unwrap_or_default(),
-            )
-            .build();
-        info_box.append(&pkg_info_link_label);
-
-        let restart_info_label = gtk::Label::builder()
-            .wrap(true)
-            .label(&gettext(
-                "Once that's done, restart Nautilus (e.g., by logging out and back in) to load the plugin.",
-            ))
-            .build();
-        info_box.append(&restart_info_label);
-
-        dialog.present(self.root().as_ref());
-    }
-
-    fn present_plugin_error_dialog(&self, extensions_display_dir: &str) {
-        let dialog = adw::AlertDialog::builder()
-            .heading(&gettext("Installation Failed"))
-            .default_response("close")
-            .build();
-
-        dialog.add_response("close", &gettext("Close"));
-        dialog.set_response_appearance("close", adw::ResponseAppearance::Suggested);
-
-        let info_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .halign(gtk::Align::Center)
-            .spacing(8)
-            .build();
-        dialog.set_extra_child(Some(&info_box));
-
-        let info_label = gtk::Label::builder()
-            .use_markup(true)
-            .wrap(true)
-            .label(&gettext(
-                "Plugin installation failed. Make sure the following directory \
-                exists and is accessible by Packet:",
-            ))
-            .build();
-        info_box.append(&info_label);
-
-        let extensions_dir_label = gtk::Label::builder()
-            .selectable(true)
-            .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::WordChar)
-            .label(extensions_display_dir)
-            .css_classes(["command_snippet"])
-            .build();
-        info_box.append(&extensions_dir_label);
-
-        dialog.present(self.root().as_ref());
-    }
-
     pub async fn spawn_send_files_receiver(&self, rx: async_channel::Receiver<Vec<String>>) {
         let imp = self.imp();
 
@@ -1384,11 +1215,18 @@ impl Window {
         // Retain discovered endpoints but reset transfer state for the new payload.
         let mut cache = imp.send_transfers_id_cache.blocking_lock();
         imp.recipient_model.remove_all();
+        let mut refreshed = std::collections::HashMap::new();
         for state in cache.values_mut() {
-            let fresh = SendRequestState::new();
-            fresh.set_endpoint_info(state.endpoint_info());
-            imp.recipient_model.append(&fresh);
-            *state = fresh;
+            let endpoint = state.endpoint_info();
+            let fresh = refreshed.entry(endpoint.id.clone()).or_insert_with(|| {
+                let fresh = SendRequestState::new();
+                fresh.set_endpoint_info(endpoint);
+                *fresh.imp().alt_endpoint_info.borrow_mut() =
+                    state.imp().alt_endpoint_info.borrow().clone();
+                imp.recipient_model.append(&fresh);
+                fresh
+            });
+            *state = fresh.clone();
         }
         drop(cache);
 
@@ -1480,7 +1318,6 @@ impl Window {
     }
 
     fn setup_file_drop(&self, widget: &gtk::Widget, replace: bool) {
-        widget.add_css_class("file-drop-zone");
         // Request raw URIs: GdkFileList can choose a broken portal transfer before our callback.
         let target = gtk::DropTargetAsync::new(
             Some(gdk::ContentFormats::new(&["text/uri-list"])), gdk::DragAction::COPY);
@@ -2275,6 +2112,7 @@ impl Window {
                         tracing::info!("Stopped RQS service");
                     }
                 }
+                crate::p2p::cleanup_wifi_direct_group().await;
             }
         ));
 
@@ -2885,16 +2723,44 @@ impl Window {
 
                             let mut send_transfers_id_cache_guard =
                                 imp.send_transfers_id_cache.lock().await;
-                            if let Some(data_transfer) =
+                            let endpoint_info = objects::EndpointInfo(endpoint_info);
+
+                            // Check if an entry with the same device name already exists
+                            let target_name = endpoint_info.name.as_deref().unwrap_or("").trim();
+                            let existing_by_name = if !target_name.is_empty() {
+                                send_transfers_id_cache_guard.values().find(|item| {
+                                    item.endpoint_info().name.as_deref().unwrap_or("").trim() == target_name
+                                }).cloned()
+                            } else {
+                                None
+                            };
+
+                            if let Some(existing) = existing_by_name {
+                                let is_new_lan = !endpoint_info.id.starts_with("bluetooth://");
+                                let previous = existing.endpoint_info();
+                                let is_existing_lan = !previous.id.starts_with("bluetooth://");
+                                if previous.id == endpoint_info.id {
+                                    existing.set_endpoint_info(endpoint_info);
+                                } else if is_new_lan && !is_existing_lan {
+                                    // Upgrade existing Bluetooth card to prioritize Wi-Fi LAN
+                                    tracing::info!(%endpoint_info, "Merging Wi-Fi LAN into existing Bluetooth card for {target_name}");
+                                    *existing.imp().alt_endpoint_info.borrow_mut() = Some(existing.endpoint_info());
+                                    existing.set_endpoint_info(endpoint_info.clone());
+                                    send_transfers_id_cache_guard.insert(endpoint_info.id.clone(), existing);
+                                } else {
+                                    // Store as alternative fallback medium
+                                    tracing::info!(%endpoint_info, "Registering alternative medium for {target_name}");
+                                    *existing.imp().alt_endpoint_info.borrow_mut() = Some(endpoint_info.clone());
+                                    send_transfers_id_cache_guard.insert(endpoint_info.id.clone(), existing);
+                                }
+                            } else if let Some(data_transfer) =
                                 send_transfers_id_cache_guard.get(&endpoint_info.id)
                             {
                                 // Update endpoint
-                                let endpoint_info = objects::EndpointInfo(endpoint_info);
                                 tracing::info!(%endpoint_info, "Updated endpoint");
                                 data_transfer.set_endpoint_info(endpoint_info);
                             } else {
                                 // Set new endpoint
-                                let endpoint_info = objects::EndpointInfo(endpoint_info);
                                 tracing::info!(%endpoint_info, "Discovered endpoint");
                                 let obj = SendRequestState::new();
                                 let id = endpoint_info.id.clone();
@@ -3064,11 +2930,21 @@ mod tests {
         previous.set_endpoint_info(objects::EndpointInfo(rqs_lib::EndpointInfo {
             id: "test-peer".into(), name: Some("Test phone".into()), ..Default::default()
         }));
-        imp.send_transfers_id_cache.blocking_lock().insert("test-peer".into(), previous.clone());
+        let alternate = objects::EndpointInfo(rqs_lib::EndpointInfo {
+            id: "bluetooth://00:00:00:00:00:01".into(), ..Default::default()
+        });
+        *previous.imp().alt_endpoint_info.borrow_mut() = Some(alternate.clone());
+        {
+            let mut cache = imp.send_transfers_id_cache.blocking_lock();
+            cache.insert("test-peer".into(), previous.clone());
+            cache.insert(alternate.id.clone(), previous.clone());
+        }
         window.present_recipients_dialog();
+        assert_eq!(imp.recipient_model.n_items(), 1);
         let fresh = imp.recipient_model.item(0).unwrap().downcast::<SendRequestState>().unwrap();
         assert_eq!(fresh.endpoint_info().id, "test-peer");
         assert_ne!(fresh, previous, "A cached endpoint must get fresh state for a new payload");
+        assert_eq!(fresh.imp().alt_endpoint_info.borrow().as_ref().unwrap().id, alternate.id);
         std::fs::remove_dir_all(directory).unwrap();
         imp.is_mdns_discovery_on.set(false);
         window.destroy();

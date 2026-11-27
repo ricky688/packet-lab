@@ -135,6 +135,7 @@ message PayloadTransferFrame {
     UNKNOWN_PACKET_TYPE = 0;
     DATA = 1;
     CONTROL = 2;
+    PAYLOAD_ACK = 3;
   }
 
   message PayloadHeader {
@@ -192,9 +193,11 @@ message BandwidthUpgradeNegotiationFrame {
     CLIENT_INTRODUCTION = 4;
     UPGRADE_FAILURE = 5;
     CLIENT_INTRODUCTION_ACK = 6;
+    UPGRADE_PATH_REQUEST = 7;
   }
 
-  // Accompanies UPGRADE_PATH_AVAILABLE and UPGRADE_FAILURE events.
+  // Accompanies UPGRADE_PATH_AVAILABLE, UPGRADE_FAILURE, and
+  // UPGRADE_PATH_REQUEST events.
   message UpgradePathInfo {
     // Should always match cs/symbol:location.nearby.proto.connections.Medium
     enum Medium {
@@ -208,8 +211,11 @@ message BandwidthUpgradeNegotiationFrame {
       NFC = 7;
       WIFI_DIRECT = 8;
       WEB_RTC = 9;
-      // 10 is reserved.
+      BLE_L2CAP = 10;
       USB = 11;
+      WEB_RTC_NON_CELLULAR = 12;
+      AWDL = 13;
+      WIFI_AWARE_R4 = 14;
     }
 
     // Accompanies Medium.WIFI_HOTSPOT.
@@ -270,11 +276,19 @@ message BandwidthUpgradeNegotiationFrame {
     optional WifiDirectCredentials wifi_direct_credentials = 6;
     optional WebRtcCredentials web_rtc_credentials = 8;
 
+    // Accompanies UPGRADE_PATH_REQUEST events.
+    message UpgradePathRequest {
+      repeated Medium mediums = 1;
+      optional MediumMetadata medium_meta_data = 2;
+    }
+
     // Disable Encryption for this upgrade medium to improve throughput.
     optional bool supports_disabling_encryption = 7;
 
     // An ack will be sent after the CLIENT_INTRODUCTION frame.
     optional bool supports_client_introduction_ack = 9;
+
+    optional UpgradePathRequest upgrade_path_request = 10;
   }
 
   // Accompanies CLIENT_INTRODUCTION events.
@@ -297,6 +311,7 @@ message BandwidthUpgradeNegotiationFrame {
 message KeepAliveFrame {
   // And ack will be sent after receiving KEEP_ALIVE frame.
   optional bool ack = 1;
+  optional uint32 seq_num = 2;
 }
 
 // Informs the remote side to immediately severe the socket connection.

@@ -36,6 +36,11 @@ libraries. The tray requires a StatusNotifier-compatible panel. The AppImage
 uses GTK's Cairo renderer by default and persists preferences with GSettings'
 keyfile backend, independently of a native bundle's dconf preferences.
 
+**Auto Start** registers the persistent AppImage file with the desktop's XDG
+autostart service. **Run in Background** keeps the receiver running when its
+window is closed. Received files go to `~/Downloads` unless you select another
+folder in Preferences.
+
 If FUSE is unavailable, the runtime can extract and run the same image:
 
 ```sh

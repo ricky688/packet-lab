@@ -25,6 +25,12 @@ class ClientTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Scan rejected'):
             client.scan_group(call, Mock(return_value=False), '/station', b'DIRECT-test', 0)
 
+    def test_scan_frequency_falls_back_to_all_channels_after_targeted_attempts(self):
+        self.assertEqual(client.scan_frequency_for_attempt(5745, 0), 5745)
+        self.assertEqual(client.scan_frequency_for_attempt(5745, 1), 5745)
+        self.assertEqual(client.scan_frequency_for_attempt(5745, 2), 0)
+        self.assertEqual(client.scan_frequency_for_attempt(0, 0), 0)
+
     def test_group_started_negotiated_address_is_used_without_dhcp(self):
         props = {'IpAddr': [192, 168, 49, 200], 'IpAddrMask': [255, 255, 255, 0],
                  'IpAddrGo': [192, 168, 49, 1]}
@@ -38,11 +44,12 @@ class ClientTests(unittest.TestCase):
             client.negotiated_address({'IpAddr': [1]}, gw)
 
     def test_supplicant_receives_raw_psk_not_an_overlong_quoted_passphrase(self):
-        props = client.group_properties(b'DIRECT-test', 'ab' * 32)
+        props = client.group_properties(b'DIRECT-test', 'ab' * 32, '02:00:00:00:00:01')
         self.assertEqual(props['psk'].get_type_string(), 'ay')
         self.assertEqual(bytes(props['psk'].unpack()), bytes.fromhex('ab' * 32))
         self.assertEqual(props['mode'].get_type_string(), 'i')
         self.assertEqual(props['mode'].unpack(), 0)
+        self.assertEqual(props['bssid'].get_string(), '02:00:00:00:00:01')
 
     def test_legacy_psk_matches_wpa2_known_vector(self):
         line = 'IEEE'.encode().hex() + '\t' + b'password'.hex() + '\t192.168.49.1\t2412\n'
@@ -71,6 +78,24 @@ class ClientTests(unittest.TestCase):
         for malformed in [bytes([221]), bytes([221, 20, 1]), ies[:-1]]:
             with self.assertRaises(ValueError):
                 client.p2p_device_address(malformed)
+
+    def test_device_info_address_matches_supplicant_peer_key(self):
+        attributes = (b'\x03\x06\x00' + bytes.fromhex('020000000001')
+                      + b'\x0d\x06\x00' + bytes.fromhex('020000000002'))
+        ies = bytes([221, len(attributes) + 4]) + bytes.fromhex('506f9a09') + attributes
+        self.assertEqual(client.p2p_device_address(ies), '02:00:00:00:00:02')
+
+    def test_expired_scan_objects_do_not_abort_discovery(self):
+        properties = {'HwAddress': '02:00:00:00:00:01'}
+        gone = RuntimeError('BSS expired')
+        gone.__cause__ = client.Gio.DBusError.new_for_dbus_error(
+            'org.freedesktop.DBus.Error.UnknownMethod', 'Object no longer exported')
+        denied = RuntimeError('Access denied')
+        call = Mock(side_effect=[gone, properties, denied])
+        self.assertEqual(client.scan_properties(call, '/old', 'test.BSS'), {})
+        self.assertEqual(client.scan_properties(call, '/peer', 'test.Peer'), properties)
+        with self.assertRaisesRegex(RuntimeError, 'Access denied'):
+            client.scan_properties(call, '/peer', 'test.Peer')
 
     def test_dhcp_rejects_unrelated_subnet_and_unbounded_prefix(self):
         for address, mask in [('192.168.0.2', '255.255.255.0'), ('192.168.49.1', '255.255.255.0'),

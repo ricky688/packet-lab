@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use btleplug::api::{Central, CentralEvent, Manager as _, ScanFilter};
@@ -34,23 +34,50 @@ impl BleListener {
     pub async fn run(self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
         info!("{INNER_NAME}: service starting");
 
+        #[cfg(target_os = "linux")]
+        let mut outgoing = crate::bluetooth::outgoing_connections();
+        #[cfg(target_os = "linux")]
+        let mut active_scan = None;
         let mut events = self.adapter.events().await?;
-        // Broad scans flood BlueZ/Blueman with unrelated advertisement property changes.
-        self.adapter
-            .start_scan(ScanFilter {
-                services: vec![SERVICE_UUID_SHARING],
-            })
-            .await?;
+        let mut scanning = false;
+        let mut last_alert: Option<Instant> = None;
 
-        let mut last_alert: SystemTime = SystemTime::UNIX_EPOCH;
-
-        loop {
+        while !ctk.is_cancelled() {
+            #[cfg(target_os = "linux")]
+            let should_scan = *outgoing.borrow_and_update() == 0;
+            #[cfg(not(target_os = "linux"))]
+            let should_scan = true;
+            if should_scan && !scanning {
+                #[cfg(target_os = "linux")]
+                {
+                    let Some(scan) = crate::bluetooth::DiscoveryScanGuard::start() else { continue };
+                    active_scan = Some(scan);
+                }
+                self.adapter.start_scan(ScanFilter {
+                    services: vec![SERVICE_UUID_SHARING],
+                }).await?;
+                scanning = true;
+            } else if !should_scan && scanning {
+                self.adapter.stop_scan().await?;
+                #[cfg(target_os = "linux")]
+                drop(active_scan.take());
+                scanning = false;
+                debug!("{INNER_NAME}: paused scan during outgoing Bluetooth connection");
+            }
             tokio::select! {
+                biased;
                 _ = ctk.cancelled() => {
                     info!("{INNER_NAME}: tracker cancelled, breaking");
                     break;
                 }
-                Some(e) = events.next() => {
+                _ = async {
+                    #[cfg(target_os = "linux")]
+                    let _ = outgoing.changed().await;
+                    #[cfg(not(target_os = "linux"))]
+                    std::future::pending::<()>().await;
+                } => {},
+                event = events.next(), if scanning => {
+                    let Some(e) = event else { break };
                     match e {
                         CentralEvent::ServiceDataAdvertisement { id, service_data } => {
                             // Sanity check as per: https://github.com/Martichou/rquickshare/issues/74
@@ -59,19 +86,18 @@ impl BleListener {
                             //
                             // ...The filtering is being done only here now.
                             if let Some(service_data) = service_data.get(&SERVICE_UUID_SHARING) {
-                                let now = SystemTime::now();
                                 // Quick Share seems to emit LE advert every 10 seconds...
                                 // Doesn't really seem much of a spam, so we wait for 10s now
                                 // just in case some implementation is sending it under that
                                 // time period
-                                if now.duration_since(last_alert)? <= Duration::from_secs(10) {
+                                if last_alert.is_some_and(|last| last.elapsed() <= Duration::from_secs(10)) {
                                     // debug!("{INNER_NAME}: Received LE advert but last alert was {}s ago", now.duration_since(last_alert)?.as_secs());
                                     continue;
                                 }
 
                                 debug!("{INNER_NAME}: A device ({id}) is sharing ({}) nearby", hex::encode(service_data));
-                                self.sender.send(())?;
-                                last_alert = now;
+                                let _ = self.sender.send(());
+                                last_alert = Some(Instant::now());
                             }
                         },
                         // Not interesting for us
@@ -83,7 +109,11 @@ impl BleListener {
             }
         }
 
-        self.adapter.stop_scan().await?;
+        if scanning {
+            self.adapter.stop_scan().await?;
+        }
+        #[cfg(target_os = "linux")]
+        drop(active_scan);
         Ok(())
     }
 }

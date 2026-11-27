@@ -29,6 +29,25 @@ template $Window: Adw.ApplicationWindow {
     width-request: 360;
     height-request: 294;
 
+    styles ["packet-shell"]
+
+    Adw.Breakpoint {
+        condition ("max-width: 420sp and min-height: 365sp")
+        setters {
+            home_actions.orientation: vertical;
+        }
+    }
+
+    Adw.Breakpoint {
+        condition ("max-height: 365sp")
+        setters {
+            home_emblem.visible: false;
+            share_text_scroll.min-content-height: 48;
+            share_text_layout.margin-top: 8;
+            share_text_layout.margin-bottom: 8;
+        }
+    }
+
     Adw.ToastOverlay toast_overlay {
         Stack root_stack {
             transition-type: crossfade;
@@ -105,8 +124,6 @@ template $Window: Adw.ApplicationWindow {
                 name: "main_page";
 
                 child: Adw.ToolbarView {
-                    extend-content-to-top-edge: true;
-
                     [bottom]
                     Adw.Clamp {
                         maximum-size: 550;
@@ -114,12 +131,13 @@ template $Window: Adw.ApplicationWindow {
                         Box bottom_bar {
                             orientation: vertical;
                             valign: end;
+                            styles ["packet-footer"]
 
                             Box {
-                                margin-top: 18;
-                                margin-bottom: 18;
-                                margin-start: 24;
-                                margin-end: 24;
+                                margin-top: 10;
+                                margin-bottom: 12;
+                                margin-start: 16;
+                                margin-end: 16;
                                 hexpand: true;
 
                                 Box bottom_bar_status {
@@ -180,8 +198,8 @@ template $Window: Adw.ApplicationWindow {
                                     height-request: 42;
 
                                     styles [
-                                        "suggested-action",
-                                        "pill",
+                                        "packet-action",
+                                        "packet-primary",
                                     ]
                                 }
                             }
@@ -212,40 +230,79 @@ template $Window: Adw.ApplicationWindow {
                                         }
                                     }
 
-                                    Adw.StatusPage main_nav_content {
+                                    Adw.Clamp {
+                                        maximum-size: 568;
                                         vexpand: true;
                                         hexpand: true;
-                                        icon-name: "io.github.ricky688.PacketLab";
-                                        title: _("Packet Lab");
-                                        description: _("Add, or drop a file to send");
 
-                                        styles [
-                                            "icon-dropshadow",
-                                        ]
-
-                                        child: Box {
+                                        Box main_nav_content {
                                             orientation: vertical;
-                                            spacing: 12;
-                                            halign: center;
+                                            spacing: 10;
+                                            margin-start: 16;
+                                            margin-end: 16;
+                                            margin-top: 4;
+                                            styles ["home-layout"]
 
-                                            Button main_add_files_button {
-                                                label: _("Add Files");
+                                            ScrolledWindow {
+                                                vexpand: true;
+                                                hscrollbar-policy: never;
+                                                styles ["home-drop"]
 
-                                                styles [
-                                                    "pill",
-                                                    "suggested-action",
-                                                    "accent",
-                                                ]
+                                                Box {
+                                                    orientation: vertical;
+                                                    valign: center;
+                                                    spacing: 8;
+                                                    margin-start: 16;
+                                                    margin-end: 16;
+                                                    margin-top: 12;
+                                                    margin-bottom: 12;
+
+                                                    Image home_emblem {
+                                                        icon-name: "io.github.ricky688.PacketLab";
+                                                        pixel-size: 56;
+                                                        halign: center;
+                                                        styles ["home-emblem"]
+                                                    }
+
+                                                    Label {
+                                                        label: _("Packet Lab");
+                                                        wrap: true;
+                                                        justify: center;
+                                                        styles ["home-title"]
+                                                    }
+
+                                                    Label {
+                                                        label: _("Add, or drop a file to send");
+                                                        wrap: true;
+                                                        justify: center;
+                                                        styles ["home-description"]
+                                                    }
+                                                }
                                             }
 
-                                            Button main_share_text_button {
-                                                label: _("Share Text");
+                                            Box home_actions {
+                                                spacing: 8;
+                                                homogeneous: true;
 
-                                                styles [
-                                                    "pill",
-                                                ]
+                                                Button main_add_files_button {
+                                                    styles ["packet-action", "packet-primary"]
+
+                                                    Adw.ButtonContent {
+                                                        label: _("Add Files");
+                                                        icon-name: "list-add-symbolic";
+                                                    }
+                                                }
+
+                                                Button main_share_text_button {
+                                                    styles ["packet-action", "packet-tonal"]
+
+                                                    Adw.ButtonContent {
+                                                        label: _("Share Text");
+                                                        icon-name: "document-edit-symbolic";
+                                                    }
+                                                }
                                             }
-                                        };
+                                        }
                                     }
                                 };
                             }
@@ -272,6 +329,7 @@ template $Window: Adw.ApplicationWindow {
                                         orientation: vertical;
                                         hexpand: true;
                                         vexpand: true;
+                                        styles ["file-drop-zone"]
 
                                         ScrolledWindow {
                                             hscrollbar-policy: never;
@@ -306,6 +364,7 @@ template $Window: Adw.ApplicationWindow {
 
                                                         styles [
                                                             "boxed-list",
+                                                            "packet-list",
                                                         ]
                                                     }
                                                 }
@@ -322,8 +381,6 @@ template $Window: Adw.ApplicationWindow {
                                 child: Adw.ToolbarView {
                                     [top]
                                     Adw.HeaderBar {
-                                        show-title: false;
-
                                         [end]
                                         MenuButton {
                                             icon-name: "open-menu-symbolic";
@@ -346,7 +403,7 @@ template $Window: Adw.ApplicationWindow {
                                             Adw.Clamp {
                                                 maximum-size: 550;
 
-                                                Box {
+                                                Box share_text_layout {
                                                     orientation: vertical;
                                                     margin-top: 24;
                                                     margin-bottom: 24;
@@ -359,6 +416,7 @@ template $Window: Adw.ApplicationWindow {
 
                                                         styles [
                                                             "card",
+                                                            "packet-editor",
                                                         ]
 
                                                         Frame {
@@ -366,7 +424,7 @@ template $Window: Adw.ApplicationWindow {
                                                             margin-start: 6;
                                                             margin-end: 6;
 
-                                                            ScrolledWindow {
+                                                            ScrolledWindow share_text_scroll {
                                                                 min-content-height: 220;
                                                                 vexpand: true;
                                                                 hscrollbar-policy: never;
@@ -448,6 +506,7 @@ template $Window: Adw.ApplicationWindow {
 
 Adw.Dialog select_recipients_dialog {
     title: _("Select Recipients");
+    styles ["packet-recipient-dialog"]
     // content-height: -1;
     // This will work but affects both the height and width
     // but we don't width to get messed up, so set Dialog's
@@ -473,6 +532,7 @@ Adw.Dialog select_recipients_dialog {
                 label: _("Connect by IP…");
                 tooltip-text: _("Connect to a local device when discovery is unavailable");
                 valign: center;
+                styles ["packet-tonal", "pill"]
             }
 
             [start]
@@ -594,15 +654,6 @@ Adw.PreferencesDialog preferences_dialog {
             Adw.SwitchRow auto_start_switch {
                 title: _("Auto Start");
                 subtitle: _("Start automatically at login");
-            }
-        }
-
-        Adw.PreferencesGroup {
-            title: _("Advanced");
-
-            Adw.SwitchRow nautilus_plugin_switch {
-                title: _("Nautilus Plugin");
-                subtitle: _("Integrate with Nautilus file menu");
             }
         }
 

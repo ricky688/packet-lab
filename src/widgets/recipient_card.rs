@@ -74,6 +74,7 @@ pub(crate) fn emit_send_request(win: &Window, model_item: &SendRequestState) {
     let imp = win.imp();
 
     let endpoint_info = model_item.endpoint_info();
+    let alt_endpoint_info = model_item.imp().alt_endpoint_info.borrow().clone();
     let files_to_send = model_item.imp().files.borrow().clone();
     let text_to_send = model_item.imp().text.borrow().clone();
 
@@ -108,6 +109,39 @@ pub(crate) fn emit_send_request(win: &Window, model_item: &SendRequestState) {
         async move {
             // FIXME: Set Failed state on Err and update UI on Failed state change
             // model_item.set_transfer_state(TransferState::Failed);
+            let primary_addr = if endpoint_info.id.starts_with("bluetooth://") {
+                endpoint_info.ip.clone().unwrap_or_else(|| endpoint_info.id.clone())
+            } else {
+                format!(
+                    "{}:{}",
+                    endpoint_info.ip.clone().unwrap_or_default(),
+                    endpoint_info.port.clone().unwrap_or_default()
+                )
+            };
+            let fallback_addr = alt_endpoint_info
+                .as_ref()
+                .map(|alt| {
+                    if alt.id.starts_with("bluetooth://") {
+                        alt.ip.clone().unwrap_or_else(|| alt.id.clone())
+                    } else {
+                        format!(
+                            "{}:{}",
+                            alt.ip.clone().unwrap_or_default(),
+                            alt.port.clone().unwrap_or_default()
+                        )
+                    }
+                })
+                .or_else(|| {
+                    (endpoint_info.id.starts_with("bluetooth://")
+                        && primary_addr != endpoint_info.id)
+                        .then(|| endpoint_info.id.clone())
+                });
+            let classic_fallback_addr = alt_endpoint_info.as_ref().and_then(|alt| {
+                (alt.id.starts_with("bluetooth://")
+                    && alt.ip.as_deref().is_some_and(|route| route.starts_with("ble-l2cap://")))
+                    .then(|| alt.id.clone())
+            });
+
             payload_sender
                 .lock()
                 .await
@@ -116,21 +150,21 @@ pub(crate) fn emit_send_request(win: &Window, model_item: &SendRequestState) {
                 .send(rqs_lib::SendInfo {
                     endpoint_id: (endpoint_info.id.starts_with("bluetooth://")
                         && endpoint_info.fullname.len() == 4)
-                        .then(|| endpoint_info.fullname.clone()),
+                        .then(|| endpoint_info.fullname.clone())
+                        .or_else(|| {
+                            alt_endpoint_info.as_ref().and_then(|alt| {
+                                (alt.id.starts_with("bluetooth://") && alt.fullname.len() == 4)
+                                    .then(|| alt.fullname.clone())
+                            })
+                        }),
                     id: endpoint_info.id.clone(),
                     name: endpoint_info
                         .name
                         .clone()
                         .unwrap_or(gettext("Unknown device")),
-                    addr: if endpoint_info.id.starts_with("bluetooth://") {
-                        endpoint_info.id.clone()
-                    } else {
-                        format!(
-                            "{}:{}",
-                            endpoint_info.ip.clone().unwrap_or_default(),
-                            endpoint_info.port.clone().unwrap_or_default()
-                        )
-                    },
+                    addr: primary_addr,
+                    fallback_addr,
+                    classic_fallback_addr,
                     ob: outbound_payload,
                 })
                 .await
@@ -298,17 +332,41 @@ pub fn create_recipient_card(
     main_box.append(&unavailability_label);
     main_box.append(&pincode_label);
 
+    let loading_spinner = adw::Spinner::builder()
+        .valign(gtk::Align::Center)
+        .halign(gtk::Align::Center)
+        .width_request(20)
+        .height_request(20)
+        .visible(false)
+        .build();
+
     model_item.connect_transfer_state_notify(clone!(
         #[weak]
         imp,
         #[weak]
         result_label,
+        #[weak]
+        loading_spinner,
         move |model_item| {
-            if model_item.transfer_state() == TransferState::Queued {
-                result_label.set_visible(true);
-                result_label.set_label(&gettext("Queued"));
-                result_label.set_css_classes(&[]);
-            };
+            match model_item.transfer_state() {
+                TransferState::Queued => {
+                    loading_spinner.set_visible(false);
+                    result_label.set_visible(true);
+                    result_label.set_label(&gettext("Queued"));
+                    result_label.set_css_classes(&[]);
+                }
+                TransferState::RequestedForConsent => {
+                    loading_spinner.set_visible(true);
+                    if model_item.event().is_none() {
+                        result_label.set_visible(true);
+                        result_label.set_label(&gettext("Connecting…"));
+                        result_label.set_css_classes(&["dimmed"]);
+                    }
+                }
+                _ => {
+                    loading_spinner.set_visible(false);
+                }
+            }
 
             // Prevent exiting the recipients view until all transfers
             // are settled
@@ -347,6 +405,7 @@ pub fn create_recipient_card(
     let id = model_item.endpoint_info().id.clone();
 
     root_box.append(&adw::Bin::builder().hexpand(true).build());
+    root_box.append(&loading_spinner);
 
     let retry_button = gtk::Button::builder()
         .valign(gtk::Align::Center)
@@ -507,30 +566,42 @@ pub fn create_recipient_card(
 
                         cancel_transfer_button.set_sensitive(true);
                         cancel_transfer_button.set_visible(true);
+                        loading_spinner.set_visible(true);
+
+                        let is_upgrading = event_msg
+                            .transport_medium()
+                            .is_some_and(|m| m.starts_with("Upgrading"));
 
                         result_label.set_visible(true);
-                        result_label.set_label(&gettext("Requested"));
-                        result_label.set_css_classes(&["accent"]);
+                        if is_upgrading {
+                            result_label.set_label(&gettext("Preparing high-speed transfer…"));
+                            result_label.set_css_classes(&["accent"]);
+                            pincode_label.set_visible(false);
+                        } else {
+                            result_label.set_label(&gettext("Requested"));
+                            result_label.set_css_classes(&["accent"]);
 
-                        pincode_label.set_visible(true);
-                        pincode_label.set_label(
-                            &formatx!(
-                                gettext("Code: {}"),
-                                client_msg
-                                    .metadata
-                                    .as_ref()
-                                    .map(|it| it.pin_code.as_ref().map(|it| it.as_str()))
-                                    .flatten()
-                                    .unwrap_or("???")
-                            )
-                            .unwrap_or_else(|_| "badly formatted locale string".into()),
-                        );
+                            pincode_label.set_visible(true);
+                            pincode_label.set_label(
+                                &formatx!(
+                                    gettext("Code: {}"),
+                                    client_msg
+                                        .metadata
+                                        .as_ref()
+                                        .map(|it| it.pin_code.as_ref().map(|it| it.as_str()))
+                                        .flatten()
+                                        .unwrap_or("???")
+                                )
+                                .unwrap_or_else(|_| "badly formatted locale string".into()),
+                            );
+                        }
 
                         eta_estimator.borrow_mut().reset_with(None);
                     }
                     RqsState::SendingFiles => {
                         model_item.set_transfer_state(TransferState::OngoingTransfer);
 
+                        loading_spinner.set_visible(false);
                         cancel_transfer_button.set_visible(true);
                         result_label.set_visible(false);
                         unavailability_label.set_visible(false);
@@ -556,6 +627,7 @@ pub fn create_recipient_card(
                         // if did not receive SendingFiles within that timeframe
                         // This is how google does it in their client
 
+                        loading_spinner.set_visible(false);
                         progress_bar.set_visible(false);
                         cancel_transfer_button.set_visible(false);
                         eta_label.set_visible(false);
@@ -584,6 +656,7 @@ pub fn create_recipient_card(
                         );
                         set_row_activatable(model_item, listbox_row.as_ref(), true);
 
+                        loading_spinner.set_visible(false);
                         progress_bar.set_visible(false);
                         cancel_transfer_button.set_visible(false);
                         eta_label.set_visible(false);
@@ -599,6 +672,7 @@ pub fn create_recipient_card(
                     RqsState::Finished => {
                         model_item.set_transfer_state(TransferState::Done);
 
+                        loading_spinner.set_visible(false);
                         cancel_transfer_button.set_visible(false);
                         progress_bar.set_visible(false);
                         eta_label.set_visible(false);

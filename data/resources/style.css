@@ -12,6 +12,141 @@
   border: 1px solid var(--border-color);
 }
 
+.packet-shell {
+  --packet-surface: #fbf8ff;
+  --packet-container: #efedf4;
+  --packet-container-high: #e9e7ef;
+  --packet-on-surface: #1b1b21;
+  --packet-on-surface-variant: #46464f;
+  --packet-primary: #4b50c6;
+  --packet-on-primary: #ffffff;
+  --packet-secondary-container: #e0e1f9;
+  --packet-on-secondary-container: #181a2c;
+  --packet-tertiary-container: #ffd8ec;
+  --packet-outline: #777680;
+  background-color: var(--packet-surface);
+  color: var(--packet-on-surface);
+}
+
+@media (prefers-color-scheme: dark) {
+  .packet-shell {
+    --packet-surface: #121318;
+    --packet-container: #1e1f25;
+    --packet-container-high: #292a30;
+    --packet-on-surface: #e3e1e9;
+    --packet-on-surface-variant: #c7c5d0;
+    --packet-primary: #bec2ff;
+    --packet-on-primary: #1c1f8b;
+    --packet-secondary-container: #434559;
+    --packet-on-secondary-container: #e0e1f9;
+    --packet-tertiary-container: #712c59;
+    --packet-outline: #90909a;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .packet-shell {
+    --packet-outline: var(--packet-on-surface);
+  }
+}
+
+.packet-shell headerbar {
+  background-color: var(--packet-surface);
+  color: var(--packet-on-surface);
+}
+
+.home-drop {
+  border: 1px dashed var(--packet-outline);
+  border-radius: 28px;
+  background-color: var(--packet-container);
+  color: var(--packet-on-surface);
+}
+
+.home-layout:drop(active) .home-drop {
+  border-color: var(--packet-primary);
+  background-color: var(--packet-secondary-container);
+}
+
+.home-emblem {
+  padding: 14px;
+  border-radius: 26px 26px 14px 26px;
+  background-color: var(--packet-tertiary-container);
+}
+
+.home-title {
+  font-size: 2em;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+}
+
+.home-description,
+.packet-footer .dimmed {
+  color: var(--packet-on-surface-variant);
+  opacity: 1;
+}
+
+.packet-footer .accent {
+  color: var(--packet-primary);
+}
+
+button.packet-action {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 9999px;
+  font-weight: 700;
+}
+
+button.packet-primary {
+  background-color: var(--packet-primary);
+  color: var(--packet-on-primary);
+}
+
+button.packet-tonal {
+  background-color: var(--packet-secondary-container);
+  color: var(--packet-on-secondary-container);
+}
+
+button.packet-primary:hover,
+button.packet-tonal:hover {
+  box-shadow: inset 0 0 0 100px alpha(currentColor, 0.08);
+}
+
+button.packet-action:active {
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 100px alpha(currentColor, 0.12);
+}
+
+button.packet-action:focus-visible,
+button.packet-tonal:focus-visible {
+  outline: 2px solid var(--packet-primary);
+  outline-offset: 2px;
+}
+
+button.packet-primary:disabled {
+  background-color: var(--packet-container-high);
+  color: var(--packet-on-surface-variant);
+  opacity: 0.65;
+}
+
+.packet-editor,
+.packet-list,
+.packet-recipient-dialog list.boxed-list {
+  background-color: var(--packet-container);
+  color: var(--packet-on-surface);
+  border-radius: 20px;
+}
+
+.packet-recipient-dialog {
+  --dialog-bg-color: var(--packet-container-high);
+  --dialog-fg-color: var(--packet-on-surface);
+}
+
+.packet-editor textview,
+.packet-editor textview text {
+  background-color: var(--packet-surface);
+  color: var(--packet-on-surface);
+}
+
 .medium-badge {
   font-size: 11px;
   font-weight: 700;

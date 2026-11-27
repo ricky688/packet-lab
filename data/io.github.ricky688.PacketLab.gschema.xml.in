@@ -38,9 +38,6 @@
     <key name="auto-start" type="b">
       <default>false</default>
     </key>
-    <key name="enable-nautilus-plugin" type="b">
-      <default>false</default>
-    </key>
     <key name="enable-tray-icon" type="b">
       <default>false</default>
     </key>

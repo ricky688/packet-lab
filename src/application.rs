@@ -155,7 +155,13 @@ mod imp {
         }
 
         fn handle_local_options(&self, options: &glib::VariantDict) -> ControlFlow<glib::ExitCode> {
-            self.obj().handle_command_line(options);
+            let app = self.obj();
+            if options.contains("background") && !options.contains("send")
+                && app.register(gio::Cancellable::NONE).is_ok() && app.is_remote()
+            {
+                return ControlFlow::Break(glib::ExitCode::SUCCESS);
+            }
+            app.handle_command_line(options);
             self.parent_handle_local_options(options)
         }
 
@@ -224,6 +230,15 @@ impl Application {
         let provider = gtk::CssProvider::new();
         provider.load_from_resource("/io/github/ricky688/PacketLab/style.css");
         if let Some(display) = gdk::Display::default() {
+            let settings = gtk::Settings::for_display(&display);
+            settings
+                .bind_property("gtk-interface-color-scheme", &provider, "prefers-color-scheme")
+                .sync_create()
+                .build();
+            settings
+                .bind_property("gtk-interface-contrast", &provider, "prefers-contrast")
+                .sync_create()
+                .build();
             gtk::style_context_add_provider_for_display(
                 &display,
                 &provider,

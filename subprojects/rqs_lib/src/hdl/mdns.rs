@@ -91,6 +91,10 @@ impl MDnsServer {
         let ble_receiver = &mut self.ble_receiver;
         let mut visibility = *self.visibility_receiver.borrow();
         let mut interval = interval_at(Instant::now() + TICK_INTERVAL, TICK_INTERVAL);
+        let mut resend_interval = interval_at(
+            Instant::now() + Duration::from_secs(8),
+            Duration::from_secs(8),
+        );
 
         loop {
             tokio::select! {
@@ -133,6 +137,11 @@ impl MDnsServer {
                         self.daemon.register(self.service_info.clone())?;
                     }
                 },
+                _ = resend_interval.tick() => {
+                    if visibility == Visibility::Visible || visibility == Visibility::Temporarily {
+                        let _ = self.daemon.register_resend(self.service_info.get_fullname());
+                    }
+                }
                 _ = interval.tick() => {
                     if visibility != Visibility::Temporarily {
                         continue;

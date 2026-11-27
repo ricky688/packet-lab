@@ -71,8 +71,17 @@ No Nemo Python extension or administrator authorization is required.
 
 Enable the tray icon in Preferences. Left-click opens Packet Lab; right-click
 offers **Open** and **Exit**. A StatusNotifier-compatible desktop panel is required.
-The native bundle supplies its symbolic icon and publishes its icon directory
-to the panel, so it does not require a system-wide icon installation.
+Packet Lab supplies the icon over D-Bus, including in portable builds.
+
+**Run in Background** keeps Packet Lab available for receiving after you close
+its window. Use **Exit** in the tray or <kbd>Ctrl</kbd>+<kbd>Q</kbd> to quit.
+**Auto Start** starts it in the background at desktop login. Native packages and
+AppImages write an XDG autostart entry using the current launcher path. Open the
+app again after moving it to refresh the entry. Your desktop session must run
+XDG autostart entries.
+
+Received files go to `~/Downloads` by default. Choose a different folder in
+Preferences if needed.
 
 VPNs can remain enabled, but successful local sharing depends on their routing/firewall policy. Local-interface sockets travel outside the VPN tunnel. For a peer that needs an explicitly selected Linux interface, start with `RQS_LAN_ROUTE='192.168.1.2%wlan0' ./packet-lab`. This applies only to that peer; other traffic keeps system routing. It does not override a VPN firewall or support a requirement that the file itself travel inside the VPN tunnel.
 
@@ -103,7 +112,7 @@ GDK_BACKEND=x11 GIO_USE_VFS=local GSETTINGS_BACKEND=memory \
   cargo test --locked --bin packet-lab window::tests::file_drops -- --ignored --nocapture
 ```
 
-The portable folder does not install desktop or D-Bus activation entries. Portal host registration can warn that the app is not installed. Auto-start, background permissions and file-manager integration are not validated for this bundle; launch it directly and keep it open for testing.
+The portable folder supplies its own resources. It can be launched directly or from a user desktop entry.
 
 ## Receiving behind a firewall
 

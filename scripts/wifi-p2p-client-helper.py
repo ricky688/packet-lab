@@ -60,10 +60,18 @@ def lease_address(address, mask, gateway):
     return f'{local}/{network.prefixlen}'
 
 
-def group_properties(ssid, psk):
+def group_properties(ssid, psk, go_address):
     # String PSKs are quoted by supplicant and treated as passphrases, not raw keys.
+    # In a persistent group profile, bssid keys the cached scan by GO device address.
     return {'ssid': GLib.Variant('ay', ssid),
-            'psk': GLib.Variant('ay', bytes.fromhex(psk)), 'mode': GLib.Variant('i', 0)}
+            'psk': GLib.Variant('ay', bytes.fromhex(psk)), 'mode': GLib.Variant('i', 0),
+            'bssid': GLib.Variant('s', go_address)}
+
+
+def scan_frequency_for_attempt(frequency, attempt):
+    if frequency and attempt < 2:
+        return frequency
+    return 0
 
 
 def scan_group(call, get, path, ssid, frequency):
@@ -101,6 +109,7 @@ def p2p_device_address(ies):
         if kind == 221 and body[:4] == b'\x50\x6f\x9a\x09':
             data.extend(body[4:])
         offset += size + 2
+    addresses = {}
     offset = 0
     while offset < len(data):
         if offset + 3 > len(data):
@@ -111,9 +120,22 @@ def p2p_device_address(ies):
         if kind in (3, 13, 15) and size >= 6:
             address = data[offset + 3:offset + 9]
             if not address[0] & 1 and any(address):
-                return ':'.join(f'{byte:02X}' for byte in address)
+                addresses[kind] = ':'.join(f'{byte:02X}' for byte in address)
         offset += size + 3
-    return None
+    # Supplicant keys its peers by Device Info before Device ID.
+    return addresses.get(13) or addresses.get(3) or addresses.get(15)
+
+
+def scan_properties(call, path, interface):
+    try:
+        return call(path, 'org.freedesktop.DBus.Properties', 'GetAll', '(s)', (interface,))
+    except RuntimeError as error:
+        # A BSS or peer can expire between listing its path and reading its properties.
+        remote = error.__cause__
+        if isinstance(remote, GLib.Error) and Gio.DBusError.get_remote_error(remote) in (
+                'org.freedesktop.DBus.Error.UnknownObject', 'org.freedesktop.DBus.Error.UnknownMethod'):
+            return {}
+        raise
 
 
 def run(parent, probe=False):
@@ -161,37 +183,54 @@ def run(parent, probe=False):
     subscription = bus.signal_subscribe(SERVICE, P2P, 'GroupStarted', None, None,
         Gio.DBusSignalFlags.NONE, started, None)
     profile = group_iface = nm_profile = nm_active = None
-    discovery_started = False
+    stop_find = None
     try:
         device = next(path for path in nmcall(NMROOT, NM, 'GetDevices')
                       if nmget(path, NM + '.Device', 'Interface') == 'p2p-dev-' + parent)
+        # A station SSID scan can see the group without creating a supplicant P2P peer.
+        find_options = {'Timeout': GLib.Variant('i', 12),
+                        'DiscoveryType': GLib.Variant('s', 'progressive')}
+        if frequency:
+            find_options['freq'] = GLib.Variant('i', frequency)
         try:
-            nmcall(device, NM + '.Device.WifiP2P', 'StartFind', '(a{sv})', ({},))
-            discovery_started = True
+            call(parent_path, P2P, 'Find', '(a{sv})', (find_options,))
+            stop_find = (call, parent_path, P2P)
         except RuntimeError:
-            pass  # Discovery may already be running for another request.
+            try:
+                nmcall(device, NM + '.Device.WifiP2P', 'StartFind', '(a{sv})', ({},))
+                stop_find = (nmcall, device, NM + '.Device.WifiP2P')
+            except RuntimeError:
+                pass  # Discovery may already be running for another request.
         scan_interfaces = [path for path in get(ROOT, SERVICE, 'Interfaces') if
                            get(path, SERVICE + '.Interface', 'Ifname') in (parent, 'p2p-dev-' + parent)]
         # Find the GO's P2P address from the exact authenticated SSID, never a Bluetooth MAC/name.
-        end, peer = time.monotonic() + 8, None
+        end, peer = time.monotonic() + 12, None
         scan_sent, ssid_seen, address_seen = False, False, False
+        scan_attempts, last_scan_at = 0, 0.0
         scan_error = None
         while time.monotonic() < end:
-            if not scan_sent:
+            now = time.monotonic()
+            if not address_seen and (scan_attempts == 0 or now - last_scan_at >= 1.5):
                 try:
-                    scan_sent = scan_group(call, get, parent_path, ssid, frequency)
+                    target_freq = scan_frequency_for_attempt(frequency, scan_attempts)
+                    if scan_group(call, get, parent_path, ssid, target_freq):
+                        scan_sent = True
+                        scan_attempts += 1
+                        last_scan_at = now
                 except RuntimeError as error:
                     scan_error = str(error)
             bsses = [bss for path in scan_interfaces for bss in get(path, SERVICE + '.Interface', 'BSSs')]
             for bss in bsses:
-                if bytes(get(bss, SERVICE + '.BSS', 'SSID')) != ssid:
+                properties = scan_properties(call, bss, SERVICE + '.BSS')
+                if bytes(properties.get('SSID', [])) != ssid:
                     continue
                 ssid_seen = True
-                address = p2p_device_address(bytes(get(bss, SERVICE + '.BSS', 'IEs')))
+                address = p2p_device_address(bytes(properties.get('IEs', [])))
                 if address:
                     address_seen = True
                     for candidate in nmget(device, NM + '.Device.WifiP2P', 'Peers'):
-                        if nmget(candidate, NM + '.WifiP2PPeer', 'HwAddress').upper() == address:
+                        properties = scan_properties(nmcall, candidate, NM + '.WifiP2PPeer')
+                        if properties.get('HwAddress', '').upper() == address:
                             peer = (candidate, address)
                             break
                 if peer:
@@ -204,8 +243,10 @@ def run(parent, probe=False):
                 f'scan_accepted={scan_sent}, ssid_seen={ssid_seen}, go_address_seen={address_seen}, '
                 f'nm_peers={len(nmget(device, NM + ".Device.WifiP2P", "Peers"))}, '
                 f'last_scan_error={scan_error}')
-        nmcall(device, NM + '.Device.WifiP2P', 'StopFind')
-        discovery_started = False
+        if stop_find:
+            stop, path, interface = stop_find
+            stop(path, interface, 'StopFind')
+            stop_find = None
         settings = {
             'connection': {'id': GLib.Variant('s', 'PacketLab-P2P-legacy'),
                            'type': GLib.Variant('s', 'wifi-p2p'), 'autoconnect': GLib.Variant('b', False)},
@@ -224,7 +265,8 @@ def run(parent, probe=False):
         # Let NM own the group, then replace its WPS attempt with the pre-provisioned PSK join.
         time.sleep(.1)
         call(parent_path, P2P, 'Cancel')
-        profile = call(parent_path, P2P, 'AddPersistentGroup', '(a{sv})', (group_properties(ssid, psk),))
+        profile = call(parent_path, P2P, 'AddPersistentGroup', '(a{sv})',
+                       (group_properties(ssid, psk, peer[1]),))
         args = {'persistent_group_object': GLib.Variant('o', profile)}
         if frequency:
             args['frequency'] = GLib.Variant('i', frequency)
@@ -276,9 +318,10 @@ def run(parent, probe=False):
         select.select([sys.stdin], [], [])
     finally:
         bus.signal_unsubscribe(subscription)
-        if discovery_started:
+        if stop_find:
             try:
-                nmcall(device, NM + '.Device.WifiP2P', 'StopFind')
+                stop, path, interface = stop_find
+                stop(path, interface, 'StopFind')
             except RuntimeError:
                 pass
         if nm_active:

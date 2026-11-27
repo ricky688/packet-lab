@@ -169,6 +169,7 @@ impl Connector {
                     socket.bind_device(Some(route.interface.as_bytes()))?;
                     // Never retry this peer through a different route after binding fails.
                     let stream = socket.connect(SocketAddr::V4(peer)).await?;
+                    let _ = stream.set_nodelay(true);
                     debug!(
                         "Local sharing TCP: {} -> {} via {}",
                         stream.local_addr()?,
@@ -187,6 +188,7 @@ impl Connector {
                             let bound = false;
                             if bound {
                                 if let Ok(stream) = socket.connect(SocketAddr::V4(peer)).await {
+                                    let _ = stream.set_nodelay(true);
                                     debug!(
                                         "Auto-bound local sharing TCP: {} -> {} via {}",
                                         stream.local_addr()?,
@@ -200,7 +202,9 @@ impl Connector {
                     }
                 }
             }
-            TcpStream::connect(addr).await
+            let stream = TcpStream::connect(addr).await?;
+            let _ = stream.set_nodelay(true);
+            Ok(stream)
         };
         timeout(CONNECT_TIMEOUT, attempt).await.map_err(|_| {
             io::Error::new(

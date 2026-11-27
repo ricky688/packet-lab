@@ -11,10 +11,122 @@ use bluer::{
     rfcomm::{Profile, Stream},
 };
 use futures::{StreamExt, pin_mut};
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use std::{collections::HashMap, os::fd::AsRawFd, sync::{Arc, LazyLock}, time::Duration};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::{broadcast, mpsc, oneshot, watch},
+};
 use tokio_util::sync::CancellationToken;
 use uuid::{Uuid, uuid};
+
+static OUTGOING_CONNECTS: LazyLock<watch::Sender<usize>> = LazyLock::new(|| watch::channel(0).0);
+static ACTIVE_SCANS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn outgoing_connections() -> watch::Receiver<usize> {
+    OUTGOING_CONNECTS.subscribe()
+}
+
+pub(crate) struct DiscoveryScanGuard;
+
+impl DiscoveryScanGuard {
+    pub(crate) fn start() -> Option<Self> {
+        let outgoing = OUTGOING_CONNECTS.borrow();
+        if *outgoing != 0 {
+            return None;
+        }
+        ACTIVE_SCANS.fetch_add(1, Ordering::SeqCst);
+        Some(Self)
+    }
+}
+
+impl Drop for DiscoveryScanGuard {
+    fn drop(&mut self) {
+        ACTIVE_SCANS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub(crate) struct OutgoingConnectGuard;
+
+impl OutgoingConnectGuard {
+    pub(crate) fn new() -> Self {
+        OUTGOING_CONNECTS.send_modify(|count| *count += 1);
+        Self
+    }
+
+    async fn pause_discovery(adapter: &bluer::Adapter) -> Self {
+        let guard = Self::new();
+        let paused = tokio::time::timeout(Duration::from_millis(1200), async {
+            while ACTIVE_SCANS.load(Ordering::SeqCst) != 0 || adapter.is_discovering().await? {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+            Ok::<_, bluer::Error>(())
+        }).await;
+        match paused {
+            Ok(Ok(())) => debug!("Bluetooth adapter stopped discovery for outgoing connection"),
+            Ok(Err(error)) => debug!("Could not check paused Bluetooth discovery: {error}"),
+            Err(_) => debug!("Bluetooth adapter still discovering after outgoing pause window"),
+        }
+        guard
+    }
+}
+
+impl Drop for OutgoingConnectGuard {
+    fn drop(&mut self) {
+        OUTGOING_CONNECTS.send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
+async fn wait_bt_connected(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    // bluer::sock_priv::connect_priv calls AsyncFd::writable() right after non-blocking connect(),
+    // which returns immediately from Tokio AsyncFd's initial speculative Ready::WRITABLE before
+    // the kernel finishes the Bluetooth handshake (leaving the socket in BT_CONNECT -> ENOTCONN).
+    // Poll the kernel directly until bt_sock_poll reports POLLOUT (BT_CONNECTED) or an error.
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLOUT | libc::POLLERR | libc::POLLHUP,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, 0) };
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if rc > 0 {
+            let mut so_err: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            if unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    &mut so_err as *mut _ as *mut libc::c_void,
+                    &mut len,
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            if so_err != 0 {
+                return Err(std::io::Error::from_raw_os_error(so_err));
+            }
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP)) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "Bluetooth connection closed during handshake",
+                ));
+            }
+            if (pfd.revents & libc::POLLOUT) != 0 {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
 
 // Nearby's Java nameUUIDFromBytes("NearbySharing"), without a namespace prefix.
 const SERVICE_UUID: Uuid = uuid!("a82efa21-ae5c-3dde-9bbc-f16da7b16c5a");
@@ -22,10 +134,21 @@ const FEF3_SERVICE_UUID: Uuid = uuid!("0000fef3-0000-1000-8000-00805f9b34fb");
 const SERVICE_HASH: [u8; 3] = [0xfc, 0x9f, 0x5e];
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
+const L2CAP_CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+pub(crate) const L2CAP_SCHEME: &str = "ble-l2cap://";
+const RFCOMM_REUSE_AGE: Duration = Duration::from_secs(30);
+const RFCOMM_REUSE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 pub(crate) struct Connect {
     pub address: Address,
+    pub endpoint: Option<[u8; 4]>,
     pub reply: oneshot::Sender<anyhow::Result<Transport>>,
+}
+
+struct RecentChannel {
+    endpoint: [u8; 4],
+    channel: u8,
+    verified: tokio::time::Instant,
 }
 
 pub(crate) fn device_name(endpoint: [u8; 4], info: &[u8]) -> anyhow::Result<String> {
@@ -81,8 +204,9 @@ fn parse_receiving_payload(
         bail!("Truncated BLE endpoint info");
     }
     let (kind, name) = parse_mdns_endpoint_info(&URL_SAFE_NO_PAD.encode(&inner[9..info_end]))?;
-    let classic_address = if inner.len() >= info_end + 6 && inner[info_end..info_end + 6] != [0; 6]
-    {
+    let has_classic_mac =
+        inner.len() >= info_end + 6 && inner[info_end..info_end + 6] != [0; 6];
+    let classic_address = if has_classic_mac {
         Address(inner[info_end..info_end + 6].try_into()?)
     } else {
         fallback_address
@@ -90,16 +214,41 @@ fn parse_receiving_payload(
     Ok((endpoint, kind, name, classic_address))
 }
 
-fn is_fef3_gatt_slot_header(data: &[u8]) -> bool {
-    // Nearby v2 BLE GATT slot header:
-    // byte 0: version 2 (0b0100_0000), bit 3 = 0 (regular GATT slot header, not 0x4a fast adv),
-    // bits 0..=2 = slot count (1..=7).
-    // Followed by 10-byte bloom filter + 4 bytes per slot hash + 2-byte PSM/reserved = 13 + 4 * slots.
-    if data.len() < 17 || (data[0] & 0xe8) != 0x40 {
-        return false;
+fn select_ble_outbound_route(
+    id: &str,
+    ble_address: Address,
+    address_type: Option<AddressType>,
+    psm: Option<u16>,
+) -> String {
+    if let Some(psm) = psm
+        && let Some(address_type @ (AddressType::LePublic | AddressType::LeRandom)) = address_type
+    {
+        return format!("{L2CAP_SCHEME}{ble_address}/{address_type}/{psm}");
     }
-    let slots = usize::from(data[0] & 0x07);
-    slots >= 1 && data.len() == 13 + 4 * slots
+    id.to_owned()
+}
+
+fn advertised_l2cap_psm(data: &[u8]) -> Option<u16> {
+    if is_fef3_gatt_slot_header(data) {
+        let psm = u16::from_be_bytes(data.get(15..17)?.try_into().ok()?);
+        return (0x80..=0xff).contains(&psm).then_some(psm);
+    }
+    // Regular v2 advertisement: service hash, data length, data, two-byte token, extra fields.
+    if data.get(..4)? != [0x48, SERVICE_HASH[0], SERVICE_HASH[1], SERVICE_HASH[2]] {
+        return None;
+    }
+    let data_len = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?) as usize;
+    let extra = data.get(data_len.checked_add(10)?..)?;
+    if extra.first()? & 1 == 0 {
+        return None;
+    }
+    let psm = u16::from_be_bytes(extra.get(1..3)?.try_into().ok()?);
+    (0x80..=0xff).contains(&psm).then_some(psm)
+}
+
+fn is_fef3_gatt_slot_header(data: &[u8]) -> bool {
+    // One version/flags byte, ten bloom-filter bytes, four hash bytes and an optional PSM.
+    matches!(data.len(), 15 | 17) && data[0] & 0xe0 == 0x40 && data[0] & 0x0f != 0
 }
 
 type ReceivingEndpoint = ([u8; 4], DeviceType, String, Address);
@@ -204,17 +353,41 @@ pub(crate) async fn discover(
 ) -> anyhow::Result<()> {
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
-    let events = adapter.discover_devices_with_changes().await?;
-    pin_mut!(events);
     let mut known = HashMap::new();
     let resolved = Arc::new(GattSlotCache::default());
     let mut last_probe = HashMap::<Address, std::time::Instant>::new();
     let probing = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-    loop {
-        let event = tokio::select! {
-            _ = ctk.cancelled() => break,
-            event = events.next() => match event { Some(e) => e, None => break },
-        };
+    let mut pause_rx = outgoing_connections();
+    'discovery: loop {
+        while *pause_rx.borrow_and_update() > 0 {
+            tokio::select! {
+                _ = ctk.cancelled() => break 'discovery,
+                changed = pause_rx.changed() => {
+                    if changed.is_err() {
+                        break 'discovery;
+                    }
+                }
+            }
+        }
+        let Some(_scan) = DiscoveryScanGuard::start() else { continue };
+        let events = adapter.discover_devices_with_changes().await?;
+        pin_mut!(events);
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = ctk.cancelled() => break 'discovery,
+                changed = pause_rx.changed() => {
+                    match changed {
+                        Ok(()) if *pause_rx.borrow() > 0 => {
+                            debug!("Pausing Bluetooth discovery during outgoing connection");
+                            break;
+                        }
+                        Ok(()) => continue,
+                        Err(_) => break 'discovery,
+                    }
+                }
+                event = events.next() => match event { Some(e) => e, None => break 'discovery },
+            };
         match event {
             AdapterEvent::DeviceAdded(address) => {
                 let adapter = adapter.clone();
@@ -281,27 +454,31 @@ pub(crate) async fn discover(
                     continue;
                 };
 
-                // 1. Immediate decode if service_data already contains the full payload (BLE 5.0 extended adv)
-                if let Ok((id_bytes, kind, name, classic_mac)) = parse_receiving_payload(data, address) {
+                // An extended advertisement can supply both transports for the same endpoint.
+                if let Ok((id_bytes, kind, name, classic_mac)) =
+                    parse_receiving_payload(data, address)
+                {
                     let endpoint = String::from_utf8_lossy(&id_bytes).into_owned();
                     let id = format!("bluetooth://{classic_mac}");
+                    let address_type = device.address_type().await.ok();
+                    let route =
+                        select_ble_outbound_route(&id, address, address_type, advertised_l2cap_psm(data));
                     let info = EndpointInfo {
                         fullname: endpoint,
-                        id: id.clone(),
+                        id,
                         name: Some(name),
-                        ip: Some(id),
+                        ip: Some(route),
                         port: None,
                         rtype: Some(kind),
                         present: Some(true),
                     };
-                    if known
-                        .get(&address)
-                        .and_then(|p: &EndpointInfo| p.name.as_ref())
-                        != info.name.as_ref()
-                    {
+                    if known.get(&address).is_none_or(|previous| {
+                        previous.name != info.name || previous.fullname != info.fullname || previous.ip != info.ip
+                    }) {
                         info!(
-                            "BLE FEF3 Nearby endpoint {} (BLE {address} -> Classic {classic_mac})",
-                            info.name.as_deref().unwrap_or("Unknown")
+                            "BLE FEF3 Nearby endpoint {} via {}",
+                            info.name.as_deref().unwrap_or("Unknown"),
+                            info.ip.as_deref().unwrap_or_default(),
                         );
                         let _ = sender.send(info.clone());
                     }
@@ -321,6 +498,7 @@ pub(crate) async fn discover(
                     continue;
                 }
                 last_probe.insert(address, std::time::Instant::now());
+                let psm = advertised_l2cap_psm(data);
                 let resolved = resolved.clone();
                 // 2. Spawn GATT slot reader asynchronously so events.next() is NEVER blocked!
                 {
@@ -341,14 +519,15 @@ pub(crate) async fn discover(
                             fullname: endpoint,
                             id: id.clone(),
                             name: Some(name),
-                            ip: Some(id),
+                            ip: Some(select_ble_outbound_route(&id, address, device.address_type().await.ok(), psm)),
                             port: None,
                             rtype: Some(kind),
                             present: Some(true),
                         };
                         info!(
-                            "BLE FEF3 Nearby endpoint {} (BLE {address} -> Classic {classic_mac})",
-                            info.name.as_deref().unwrap_or("Unknown")
+                            "BLE FEF3 Nearby endpoint {} via {}",
+                            info.name.as_deref().unwrap_or("Unknown"),
+                            info.ip.as_deref().unwrap_or_default(),
                         );
                         let _ = sender.send(info);
                     }
@@ -365,6 +544,7 @@ pub(crate) async fn discover(
                 }
             }
             _ => {}
+        }
         }
     }
     Ok(())
@@ -476,16 +656,25 @@ fn background_advertisement<T: Send + 'static>(
     }))
 }
 
-async fn retry_bluetooth_connection<F, Fut>(mut attempt: F) -> bluer::Result<()>
+async fn retry_bluetooth_connection<T, F, Fut>(mut attempt: F) -> bluer::Result<T>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bluer::Result<()>>,
+    Fut: std::future::Future<Output = bluer::Result<T>>,
 {
     for retry in 0..=8 {
         match attempt().await {
-            Err(error) if retry < 8 && (error.kind == bluer::ErrorKind::InProgress
-                || (matches!(error.kind, bluer::ErrorKind::Failed | bluer::ErrorKind::ConnectionAttemptFailed)
-                    && error.message.contains("br-connection-busy"))) => {
+            Err(error)
+                if retry < 8
+                    && (error.kind == bluer::ErrorKind::InProgress
+                        || (matches!(
+                            error.kind,
+                            bluer::ErrorKind::Failed
+                                | bluer::ErrorKind::ConnectionAttemptFailed
+                                | bluer::ErrorKind::Internal(bluer::InternalErrorKind::Io(_))
+                        ) && (error.message.contains("br-connection-busy")
+                            || error.message.contains("Resource busy")
+                            || error.message.contains("Operation already in progress")))) =>
+            {
                 debug!("Nearby Bluetooth operation busy; retrying after controller settles ({retry}): {error}");
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -495,12 +684,293 @@ where
     unreachable!()
 }
 
+fn build_sdp_rfcomm_query(uuid: Uuid) -> [u8; 32] {
+    let mut pdu = [0u8; 32];
+    pdu[..8].copy_from_slice(&[0x06, 0x00, 0x01, 0x00, 0x1b, 0x35, 0x11, 0x1c]);
+    pdu[8..24].copy_from_slice(uuid.as_bytes());
+    pdu[24..].copy_from_slice(&[0x01, 0x00, 0x35, 0x03, 0x09, 0x00, 0x04, 0x00]);
+    pdu
+}
+
+fn parse_sdp_rfcomm_channel(pdu: &[u8]) -> anyhow::Result<u8> {
+    if pdu.len() < 7 || pdu[0] != 0x07 {
+        bail!("Invalid SDP ServiceSearchAttributeResponse PDU");
+    }
+    for window in pdu[5..].windows(5) {
+        if window[..4] == [0x19, 0x00, 0x03, 0x08] && (1..=30).contains(&window[4]) {
+            return Ok(window[4]);
+        }
+    }
+    bail!("No RFCOMM channel in SDP response")
+}
+
+async fn resolve_sdp_rfcomm_channel(
+    target: Address,
+    uuid: Uuid,
+) -> std::io::Result<(u8, bluer::l2cap::SeqPacket)> {
+    let seq = bluer::l2cap::SeqPacket::connect(bluer::l2cap::SocketAddr::new(
+        target,
+        AddressType::BrEdr,
+        1,
+    ))
+    .await?;
+    wait_bt_connected(seq.as_raw_fd()).await?;
+    seq.send(&build_sdp_rfcomm_query(uuid)).await?;
+    let mut buf = [0u8; 512];
+    let n = seq.recv(&mut buf).await?;
+    let channel = parse_sdp_rfcomm_channel(&buf[..n])
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::NotFound, err.to_string()))?;
+    Ok((channel, seq))
+}
+
+async fn connect_unpaired_rfcomm(target: Address, channel: u8) -> std::io::Result<Stream> {
+    let socket = bluer::rfcomm::Socket::new()?;
+    // BT_SECURITY_LOW (1) uses HCI_AT_NO_BONDING (SSP Just-Works No-Bonding encryption),
+    // which satisfies Android's listenUsingInsecureRfcommWithServiceRecord without OS pairing/bonding.
+    let _ = socket.set_security(bluer::rfcomm::Security {
+        level: bluer::rfcomm::SecurityLevel::Low,
+        key_size: 0,
+    });
+    socket.bind(bluer::rfcomm::SocketAddr::any())?;
+    let stream = socket
+        .connect(bluer::rfcomm::SocketAddr::new(target, channel))
+        .await?;
+    wait_bt_connected(stream.as_raw_fd()).await?;
+    Ok(stream)
+}
+
+async fn run_l2cap_receiver(
+    adapter: bluer::Adapter,
+    endpoint: [u8; 4],
+    info: Vec<u8>,
+    mut visibility: watch::Receiver<Visibility>,
+    incoming: mpsc::Sender<(Transport, String)>,
+    ctk: CancellationToken,
+) -> anyhow::Result<()> {
+    use bluer::l2cap::{Security, SecurityLevel, Socket, SocketAddr};
+    let mut receiving = None;
+    loop {
+        if *visibility.borrow_and_update() == Visibility::Invisible {
+            receiving = None;
+        } else if receiving.is_none() {
+            let socket = Socket::new_stream()?;
+            socket.set_security(Security { level: SecurityLevel::Low, key_size: 0 })?;
+            socket.bind(SocketAddr::new(adapter.address().await?, AddressType::LePublic, 0))?;
+            let psm = socket.local_addr()?.psm;
+            let listener = socket.listen(4)?;
+            let mut payload = receiving_payload(endpoint, &info, Address::any())?;
+            // The extended advertisement carries the LE PSM directly, without a GATT slot or Classic address.
+            payload.push(0x01);
+            payload.extend_from_slice(&psm.to_be_bytes());
+            let advertisement = adapter.advertise(bluer::adv::Advertisement {
+                advertisement_type: bluer::adv::Type::Peripheral,
+                service_data: [(FEF3_SERVICE_UUID, payload)].into(),
+                secondary_channel: Some(bluer::adv::SecondaryChannel::OneM),
+                ..Default::default()
+            }).await?;
+            info!("Nearby BLE L2CAP receive advertisement active on PSM {psm:#06x}");
+            receiving = Some((listener, advertisement));
+        }
+        tokio::select! {
+            _ = ctk.cancelled() => return Ok(()),
+            changed = visibility.changed() => { changed?; }
+            connection = async {
+                match &receiving {
+                    Some((listener, _)) => listener.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let (mut stream, peer) = connection?;
+                let validation = async {
+                    let mut request = [0; 5];
+                    stream.read_exact(&mut request).await?;
+                    anyhow::ensure!(request == [0, 0, 0, 1, 3], "Unexpected Nearby L2CAP request");
+                    stream.write_all(&[0, 0, 0, 1, 23]).await?;
+                    Ok::<_, anyhow::Error>(())
+                };
+                match tokio::time::timeout(Duration::from_secs(3), validation).await {
+                    Ok(Ok(())) if *visibility.borrow() != Visibility::Invisible => {
+                        info!("Nearby BLE L2CAP accepted, starting authenticated Quick Share session");
+                        let transport = l2cap_transport(stream, ctk.clone());
+                        incoming.send((transport, format!("{L2CAP_SCHEME}{}", peer.addr))).await?;
+                    }
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => debug!("Ignoring invalid Nearby BLE L2CAP connection: {error}"),
+                    Err(_) => debug!("Nearby BLE L2CAP connection did not send a request"),
+                }
+            }
+        }
+    }
+}
+
+pub(crate) async fn connect_l2cap(address: &str, token: CancellationToken) -> anyhow::Result<Transport> {
+    use bluer::l2cap::{Security, SecurityLevel, Socket, SocketAddr};
+    use prost::Message;
+
+    let target = address.strip_prefix(L2CAP_SCHEME).context("Missing BLE L2CAP scheme")?;
+    let (address, route) = target.split_once('/').context("Missing BLE L2CAP route")?;
+    let (address_type, psm) = route.split_once('/').context("Missing BLE L2CAP PSM")?;
+    let address: Address = address.parse()?;
+    let address_type: AddressType = address_type.parse()?;
+    let psm: u16 = psm.parse()?;
+    anyhow::ensure!(address != Address::any() &&
+        matches!(address_type, AddressType::LePublic | AddressType::LeRandom) &&
+        (0x80..=0xff).contains(&psm), "Invalid BLE L2CAP endpoint");
+
+    let stream = tokio::time::timeout(L2CAP_CONNECT_TIMEOUT, async {
+        let session = bluer::Session::new().await?;
+        let adapter = session.default_adapter().await?;
+        let _pause = OutgoingConnectGuard::pause_discovery(&adapter).await;
+        let socket = Socket::new_stream()?;
+        socket.set_security(Security { level: SecurityLevel::Low, key_size: 0 })?;
+        socket.bind(SocketAddr::new(adapter.address().await?, AddressType::LePublic, 0))?;
+        let mut stream = socket.connect(SocketAddr::new(address, address_type, psm)).await?;
+        wait_bt_connected(stream.as_raw_fd()).await?;
+        debug!("Nearby BLE L2CAP link connected, waiting for peer readiness");
+        stream.write_all(&[0, 0, 0, 1, 3]).await?;
+        let mut ready = [0; 5];
+        stream.read_exact(&mut ready).await?;
+        anyhow::ensure!(ready == [0, 0, 0, 1, 23], "Unexpected Nearby L2CAP readiness response");
+
+        let intro = BleControl {
+            kind: 1,
+            introduction: Some(BleIntroduction {
+                service_hash: SERVICE_HASH.to_vec(),
+                socket_version: 2,
+                salt: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()),
+            }),
+            acknowledgement: None,
+        }.encode_to_vec();
+        stream.write_u32(3 + intro.len() as u32).await?;
+        stream.write_all(&[0; 3]).await?;
+        stream.write_all(&intro).await?;
+        Ok::<_, anyhow::Error>(stream)
+    }).await.context("Nearby BLE L2CAP connection timed out")??;
+    info!("Connected to Nearby BLE L2CAP on PSM {psm:#06x}");
+    Ok(l2cap_transport(stream, token))
+}
+
+fn l2cap_transport(stream: bluer::l2cap::Stream, token: CancellationToken) -> Transport {
+    let (transport, bridge) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        if let Err(error) = relay_l2cap(stream, bridge, token).await {
+            debug!("Nearby BLE L2CAP closed: {error:#}");
+        }
+    });
+    Transport::new(transport)
+}
+
+async fn relay_l2cap(
+    stream: bluer::l2cap::Stream,
+    bridge: tokio::io::DuplexStream,
+    token: CancellationToken,
+) -> anyhow::Result<()> {
+    use prost::Message;
+    const MAX_FRAME: u32 = 5 * 1024 * 1024;
+    let (mut ble_in, ble_out) = stream.into_split();
+    let ble_out = tokio::sync::Mutex::new(ble_out);
+    let (mut app_in, mut app_out) = tokio::io::split(bridge);
+    let receive = async {
+        loop {
+            let outer_size = ble_in.read_u32().await?;
+            anyhow::ensure!((4..=MAX_FRAME + 7).contains(&outer_size), "Invalid BLE frame size");
+            let mut marker = [0; 3];
+            ble_in.read_exact(&mut marker).await?;
+            let size = match marker {
+                // BLE socket control frames are separate from the Nearby Connections session.
+                [0, 0, 0] => {
+                    anyhow::ensure!(outer_size <= 256, "Oversized BLE control frame");
+                    let mut control = [0; 253];
+                    let body = &mut control[..(outer_size - 3) as usize];
+                    ble_in.read_exact(body).await?;
+                    match BleControl::decode(&*body)?.kind {
+                        1 | 3 => continue, // The listener is dedicated to Nearby Sharing.
+                        2 => return Ok(()),
+                        _ => anyhow::bail!("Unsupported BLE control frame"),
+                    }
+                }
+                SERVICE_HASH => {
+                    anyhow::ensure!(outer_size > 7, "Missing Nearby BLE data");
+                    let size = ble_in.read_u32().await?;
+                    anyhow::ensure!(size == outer_size - 7, "Mismatched BLE data length");
+                    size
+                }
+                _ => anyhow::bail!("Unexpected BLE service marker"),
+            };
+            anyhow::ensure!(size <= MAX_FRAME, "Nearby frame too large");
+            let ack = BleControl {
+                kind: 3,
+                introduction: None,
+                acknowledgement: Some(BleAcknowledgement {
+                    service_hash: SERVICE_HASH.to_vec(),
+                    size,
+                }),
+            }.encode_to_vec();
+            let mut packet = Vec::with_capacity(7 + ack.len());
+            packet.extend_from_slice(&((ack.len() + 3) as u32).to_be_bytes());
+            packet.extend_from_slice(&[0; 3]);
+            packet.extend_from_slice(&ack);
+            ble_out.lock().await.write_all(&packet).await?;
+            app_out.write_u32(size).await?;
+            let copied = tokio::io::copy(&mut (&mut ble_in).take(size.into()), &mut app_out).await?;
+            anyhow::ensure!(copied == u64::from(size), "Incomplete BLE frame");
+        }
+    };
+    let send = async {
+        loop {
+            let size = app_in.read_u32().await?;
+            anyhow::ensure!((1..=MAX_FRAME).contains(&size), "Invalid Nearby frame size");
+            let mut header = [0; 11];
+            header[..4].copy_from_slice(&(size + 7).to_be_bytes());
+            header[4..7].copy_from_slice(&SERVICE_HASH);
+            header[7..].copy_from_slice(&size.to_be_bytes());
+            let mut ble_out = ble_out.lock().await;
+            ble_out.write_all(&header).await?;
+            let copied = tokio::io::copy(&mut (&mut app_in).take(size.into()), &mut *ble_out).await?;
+            anyhow::ensure!(copied == u64::from(size), "Incomplete Nearby frame");
+        }
+    };
+    tokio::select! {
+        _ = token.cancelled() => Ok(()),
+        result = receive => result,
+        result = send => result,
+    }
+}
+
+#[derive(prost::Message)]
+struct BleControl {
+    #[prost(uint32, tag = "1")]
+    kind: u32,
+    #[prost(message, optional, tag = "2")]
+    introduction: Option<BleIntroduction>,
+    #[prost(message, optional, tag = "4")]
+    acknowledgement: Option<BleAcknowledgement>,
+}
+
+#[derive(prost::Message)]
+struct BleIntroduction {
+    #[prost(bytes = "vec", tag = "1")]
+    service_hash: Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    socket_version: u32,
+    #[prost(string, tag = "3")]
+    salt: String,
+}
+
+#[derive(prost::Message)]
+struct BleAcknowledgement {
+    #[prost(bytes = "vec", tag = "1")]
+    service_hash: Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    size: u32,
+}
+
 pub(crate) async fn run(
     endpoint: [u8; 4],
     encoded_info: String,
     mut visibility: watch::Receiver<Visibility>,
     mut connects: mpsc::Receiver<Connect>,
-    incoming: mpsc::Sender<(Stream, String)>,
+    incoming: mpsc::Sender<(Transport, String)>,
     ctk: CancellationToken,
 ) -> anyhow::Result<()> {
     let session = bluer::Session::new().await?;
@@ -510,6 +980,19 @@ pub(crate) async fn run(
     let old_timeout = adapter.discoverable_timeout().await?;
     let endpoint_info = URL_SAFE_NO_PAD.decode(encoded_info)?;
     let alias = device_name(endpoint, &endpoint_info)?;
+    let le_only = std::env::var("RQS_BLE_L2CAP").as_deref() != Ok("0");
+    let _le_receiver = le_only.then(|| {
+        let adapter = adapter.clone();
+        let info = endpoint_info.clone();
+        let visibility = visibility.clone();
+        let incoming = incoming.clone();
+        let ctk = ctk.clone();
+        tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            if let Err(error) = run_l2cap_receiver(adapter, endpoint, info, visibility, incoming, ctk).await {
+                warn!("Nearby BLE L2CAP receive service failed: {error:#}");
+            }
+        }))
+    });
     let mut profile = session
         .register_profile(Profile {
             uuid: SERVICE_UUID,
@@ -522,15 +1005,20 @@ pub(crate) async fn run(
         .await?;
     // Nearby authenticates with UKEY2 and transfer consent, rather than OS Bluetooth bonding.
     let result: anyhow::Result<()> = async {
-        adapter.set_discoverable_timeout(0).await?;
+        if !le_only {
+            adapter.set_discoverable_timeout(0).await?;
+        }
         let mut pending: HashMap<Address, oneshot::Sender<anyhow::Result<Transport>>> = HashMap::new();
+        let mut channels = HashMap::<Address, RecentChannel>::new();
         let mut attempts = tokio::task::JoinSet::new();
         let mut receiving = None;
         loop {
             let visible = *visibility.borrow_and_update() != Visibility::Invisible;
-            adapter.set_alias(if visible { alias.clone() } else { old_alias.clone() }).await?;
-            adapter.set_discoverable(visible).await?;
-            if visible && receiving.is_none() {
+            if !le_only {
+                adapter.set_alias(if visible { alias.clone() } else { old_alias.clone() }).await?;
+                adapter.set_discoverable(visible).await?;
+            }
+            if visible && !le_only && receiving.is_none() {
                 match advertise_receiving(&adapter, endpoint, &endpoint_info).await {
                     Ok(handles) => receiving = Some(handles),
                     Err(error) => warn!("Nearby receiving BLE/GATT advertisement failed: {error}"),
@@ -546,42 +1034,88 @@ pub(crate) async fn run(
                         continue;
                     }
                     let target = request.address;
+                    let peer_endpoint = request.endpoint;
+                    channels.retain(|_, entry| entry.verified.elapsed() < RFCOMM_REUSE_AGE);
+                    let cached = channels.remove(&target).filter(|entry| Some(entry.endpoint) == peer_endpoint);
                     pending.insert(request.address, request.reply);
-                    let adapter_clone = adapter.clone();
+                    let adapter_for_connect = adapter.clone();
                     attempts.spawn(async move {
-                        // BlueZ resolves the advertised service's channel via SDP; Android channels vary.
+                        let _pause_discovery = OutgoingConnectGuard::pause_discovery(&adapter_for_connect).await;
+                        if let Some(entry) = cached {
+                            match tokio::time::timeout(
+                                RFCOMM_REUSE_TIMEOUT,
+                                connect_unpaired_rfcomm(target, entry.channel),
+                            ).await {
+                                Ok(Ok(stream)) => {
+                                    info!("Reused recent Nearby RFCOMM channel for the same endpoint");
+                                    return (target, Ok(Transport::new(stream)), Some(entry));
+                                }
+                                Ok(Err(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                                    return (target, Err(error.into()), None);
+                                }
+                                _ => debug!("Recent Nearby RFCOMM channel was unavailable; querying SDP"),
+                            }
+                        }
+                        // Connect via kernel L2CAP SDP (PSM 1) + unpaired RFCOMM socket (BT_SECURITY_LOW / HCI_AT_NO_BONDING)
+                        // so BlueZ D-Bus never triggers OS Bluetooth pairing or persistent bonding.
                         let result = async {
-                            info!("Resolving Nearby RFCOMM service {SERVICE_UUID} on {target}");
-                            tokio::time::timeout(SERVICE_CONNECT_TIMEOUT, async {
-                                // A BLE advertisement can name a Classic address BlueZ has never discovered.
-                                let device = if adapter_clone.device_addresses().await?.contains(&target) {
-                                    adapter_clone.device(target)?
-                                } else {
-                                    info!("Creating Classic Bluetooth device object for advertised address {target}");
-                                    let device = adapter_clone.connect_device(target, AddressType::BrEdr).await?;
-                                    while !device.is_services_resolved().await? {
-                                        tokio::time::sleep(Duration::from_millis(100)).await;
+                            info!("Resolving Nearby RFCOMM service {SERVICE_UUID} on {target} via direct L2CAP SDP");
+                            let stream = tokio::time::timeout(SERVICE_CONNECT_TIMEOUT, async {
+                                // Keep the SDP L2CAP socket open while RFCOMM connects over the same BR/EDR ACL link.
+                                let (channel, resolved, _sdp_keepalive) = match retry_bluetooth_connection(|| async {
+                                    resolve_sdp_rfcomm_channel(target, SERVICE_UUID)
+                                        .await
+                                        .map_err(bluer::Error::from)
+                                })
+                                .await
+                                {
+                                    Ok((channel, seq)) => {
+                                        info!("Resolved Nearby RFCOMM channel {channel} on {target}");
+                                        (channel, true, Some(seq))
                                     }
-                                    device
+                                    // bluer wraps the OS error text as "IO error ...: Host is down (os error 112)".
+                                    Err(err)
+                                        if err.message.contains("os error 112")
+                                            || err.message.contains("Host is down") =>
+                                    {
+                                        return Err(err);
+                                    }
+                                    Err(err) => {
+                                        debug!("SDP channel query on {target} failed ({err}); falling back to RFCOMM channel 27");
+                                        (27, false, None)
+                                    }
                                 };
-                                retry_bluetooth_connection(|| device.connect_profile(&SERVICE_UUID)).await
+                                let stream = retry_bluetooth_connection(|| async {
+                                    connect_unpaired_rfcomm(target, channel)
+                                        .await
+                                        .map_err(bluer::Error::from)
+                                })
+                                .await?;
+                                let verified = peer_endpoint.filter(|_| resolved).map(|endpoint| RecentChannel {
+                                    endpoint,
+                                    channel,
+                                    verified: tokio::time::Instant::now(),
+                                });
+                                Ok::<_, bluer::Error>((Transport::new(stream), verified))
                             })
-                                .await.context("Nearby service connection timed out")?
-                                .with_context(|| format!("Nearby service on {target} is not accepting connections"))?;
-                            Ok::<_, anyhow::Error>(())
-                        }.await;
-                        (target, result)
+                            .await
+                            .context("Nearby service connection timed out")?
+                            .with_context(|| format!("Nearby service on {target} is not accepting connections"))?;
+                            Ok::<_, anyhow::Error>(stream)
+                        }
+                        .await;
+                        match result {
+                            Ok((transport, verified)) => (target, Ok(transport), verified),
+                            Err(error) => (target, Err(error), None),
+                        }
                     });
                 }
                 Some(done) = attempts.join_next() => {
-                    if let Ok((address, res)) = done {
-                        match res {
-                            Ok(()) => {
-                                // Waiting for profile.next() callback
-                            }
-                            Err(err) => {
-                                if let Some(reply) = pending.remove(&address) {
-                                    let _ = reply.send(Err(err));
+                    if let Ok((address, res, verified)) = done {
+                        if let Some(reply) = pending.remove(&address) {
+                            if reply.send(res).is_ok() {
+                                if let Some(entry) = verified {
+                                    channels.insert(address, entry);
                                 }
                             }
                         }
@@ -591,9 +1125,9 @@ pub(crate) async fn run(
                     let address = request.device();
                     if let Some(reply) = pending.remove(&address) {
                         let _ = reply.send(request.accept().map(Transport::new).map_err(Into::into));
-                    } else if visible {
+                    } else if visible && !le_only {
                         let stream = request.accept()?;
-                        incoming.send((stream, format!("bluetooth://{address}"))).await?;
+                        incoming.send((Transport::new(stream), format!("bluetooth://{address}"))).await?;
                     } else { request.reject(bluer::rfcomm::ReqError::Rejected); }
                 }
             }
@@ -601,16 +1135,18 @@ pub(crate) async fn run(
         Ok(())
     }.await;
     // Do not overwrite a name changed by another application while we were running.
-    if adapter.alias().await.ok().as_deref() == Some(&alias) {
+    if !le_only && adapter.alias().await.ok().as_deref() == Some(&alias) {
         if let Err(err) = adapter.set_alias(old_alias).await {
             warn!("Restoring Bluetooth name: {err}");
         }
     }
-    if let Err(err) = adapter.set_discoverable(old_visible).await {
-        warn!("Restoring Bluetooth visibility: {err}");
-    }
-    if let Err(err) = adapter.set_discoverable_timeout(old_timeout).await {
-        warn!("Restoring Bluetooth timeout: {err}");
+    if !le_only {
+        if let Err(err) = adapter.set_discoverable(old_visible).await {
+            warn!("Restoring Bluetooth visibility: {err}");
+        }
+        if let Err(err) = adapter.set_discoverable_timeout(old_timeout).await {
+            warn!("Restoring Bluetooth timeout: {err}");
+        }
     }
     result
 }
@@ -618,13 +1154,17 @@ pub(crate) async fn run(
 pub(crate) async fn connect(
     sender: &mpsc::Sender<Connect>,
     address: &str,
+    endpoint: Option<&str>,
 ) -> anyhow::Result<Transport> {
     let address = address
         .strip_prefix("bluetooth://")
         .context("Invalid Bluetooth address")?
         .parse()?;
     let (reply, receive) = oneshot::channel();
-    sender.send(Connect { address, reply }).await?;
+    let endpoint = endpoint
+        .filter(|id| id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .and_then(|id| id.as_bytes().try_into().ok());
+    sender.send(Connect { address, endpoint, reply }).await?;
     tokio::time::timeout(CONNECTION_TIMEOUT, receive)
         .await
         .context("Bluetooth connection timed out")??
@@ -664,14 +1204,14 @@ mod tests {
         calls = 0;
         let result = retry_bluetooth_connection(|| {
             calls += 1;
-            std::future::ready(Err(bluer::Error { kind: bluer::ErrorKind::AuthenticationRejected, message: "Rejected".into() }))
+            std::future::ready(Err::<(), _>(bluer::Error { kind: bluer::ErrorKind::AuthenticationRejected, message: "Rejected".into() }))
         }).await;
         assert_eq!(result.unwrap_err().kind, bluer::ErrorKind::AuthenticationRejected);
         assert_eq!(calls, 1);
         calls = 0;
         assert!(retry_bluetooth_connection(|| {
             calls += 1;
-            std::future::ready(Err(bluer::Error { kind: bluer::ErrorKind::InProgress, message: "busy".into() }))
+            std::future::ready(Err::<(), _>(bluer::Error { kind: bluer::ErrorKind::InProgress, message: "busy".into() }))
         }).await.is_err());
         assert_eq!(calls, 9, "Busy retry must remain bounded");
     }
@@ -704,17 +1244,18 @@ mod tests {
 
     #[tokio::test]
     async fn connection_preserves_service_errors_and_targets_the_selected_device() {
-        assert!(CONNECTION_TIMEOUT > SERVICE_CONNECT_TIMEOUT);
+        assert!(CONNECTION_TIMEOUT > SERVICE_CONNECT_TIMEOUT + RFCOMM_REUSE_TIMEOUT);
         let (sender, mut receiver) = mpsc::channel::<Connect>(1);
-        let connect = connect(&sender, "bluetooth://02:00:00:00:00:01");
+        let connect = connect(&sender, "bluetooth://02:00:00:00:00:01", Some("Ab01"));
         let service = async {
             let request = receiver.recv().await.unwrap();
             assert_eq!(request.address.to_string(), "02:00:00:00:00:01");
+            assert_eq!(request.endpoint, Some(*b"Ab01"));
             let _ = request.reply.send(Err(anyhow!("org.bluez.Error.NotAvailable")));
         };
         let (result, ()) = tokio::join!(connect, service);
         assert!(result.err().unwrap().to_string().contains("NotAvailable"));
-        assert!(super::connect(&sender, "bad address").await.is_err());
+        assert!(super::connect(&sender, "bad address", None).await.is_err());
     }
     #[test]
     fn receiving_slot_contains_endpoint_info_and_classic_address() {
@@ -769,6 +1310,41 @@ mod tests {
 
         // 1. Wrapped GATT slot payload
         let slot_bytes = receiving_payload(*b"PX9A", &info, classic_mac).unwrap();
+        assert_eq!(advertised_l2cap_psm(&slot_bytes), None);
+        let mut extended = slot_bytes.clone();
+        // The Samsung capture included both a PSM and instant-connection fields.
+        extended.extend_from_slice(&[3, 0, 175, 4, 0, 1, 2, 3]);
+        assert_eq!(advertised_l2cap_psm(&extended), Some(175));
+        assert_eq!(advertised_l2cap_psm(&extended[..slot_bytes.len() + 2]), None);
+        let invalid_psm = slot_bytes.len() + 2;
+        extended[invalid_psm] = 7;
+        assert_eq!(advertised_l2cap_psm(&extended), None);
+        let mut valid_extended = slot_bytes.clone();
+        valid_extended.extend_from_slice(&[3, 0, 129, 4, 0, 1, 2, 3]);
+        assert_eq!(
+            select_ble_outbound_route(
+                &format!("bluetooth://{classic_mac}"),
+                ble_random_mac,
+                Some(AddressType::LeRandom),
+                advertised_l2cap_psm(&valid_extended),
+            ),
+            format!("{L2CAP_SCHEME}{ble_random_mac}/random/129"),
+        );
+        assert_eq!(
+            select_ble_outbound_route(
+                &format!("bluetooth://{ble_random_mac}"),
+                ble_random_mac,
+                Some(AddressType::LePublic),
+                advertised_l2cap_psm(&valid_extended),
+            ),
+            format!("{L2CAP_SCHEME}{ble_random_mac}/public/129"),
+        );
+        let mut header = [0; 17];
+        header[0] = 0x51;
+        header[15..].copy_from_slice(&129u16.to_be_bytes());
+        assert_eq!(advertised_l2cap_psm(&header), Some(129));
+        assert_eq!(advertised_l2cap_psm(&header[..15]), None);
+        assert_eq!(advertised_l2cap_psm(&header[..16]), None);
         let (id, kind, name, resolved_mac) =
             parse_receiving_payload(&slot_bytes, ble_random_mac).unwrap();
         assert_eq!(id, *b"PX9A");
@@ -796,5 +1372,23 @@ mod tests {
         for invalid in [vec![], vec![0x48, 0xfc, 0x9f, 0x5e, 0, 0, 1, 0], vec![0x23; 10]] {
             assert!(parse_receiving_payload(&invalid, ble_random_mac).is_err());
         }
+    }
+
+    #[test]
+    fn sdp_rfcomm_query_and_response_parser_extract_dynamic_channel() {
+        let query = build_sdp_rfcomm_query(SERVICE_UUID);
+        assert_eq!(query[0], 0x06);
+        assert_eq!(&query[3..5], &[0x00, 0x1b]);
+        assert_eq!(&query[8..24], SERVICE_UUID.as_bytes());
+
+        // Live SDP ServiceSearchAttributeResponse captured from Galaxy S24 Ultra (RFCOMM channel 11).
+        let response = [
+            0x07, 0x00, 0x01, 0x00, 0x19, 0x00, 0x16, 0x35, 0x14, 0x36, 0x00, 0x11, 0x09, 0x00,
+            0x04, 0x35, 0x0c, 0x35, 0x03, 0x19, 0x01, 0x00, 0x35, 0x05, 0x19, 0x00, 0x03, 0x08,
+            0x0b, 0x00,
+        ];
+        assert_eq!(parse_sdp_rfcomm_channel(&response).unwrap(), 11);
+        assert!(parse_sdp_rfcomm_channel(&[0x07, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00]).is_err());
+        assert!(parse_sdp_rfcomm_channel(&[0x01, 0x00, 0x01]).is_err());
     }
 }

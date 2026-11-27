@@ -1,4 +1,5 @@
 mod application;
+mod autostart;
 mod manual_peer;
 mod file_drop;
 #[rustfmt::skip]
@@ -9,7 +10,6 @@ mod ext;
 mod monitors;
 mod objects;
 mod p2p;
-mod plugins;
 #[cfg(target_os = "linux")]
 mod tray;
 mod utils;

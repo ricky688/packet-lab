@@ -76,6 +76,24 @@ struct DirectGroup {
 static DIRECT_GROUP: Mutex<Option<DirectGroup>> = Mutex::new(None);
 static P2P_CLIENT: Mutex<Option<(OwnedObjectPath, OwnedObjectPath)>> = Mutex::new(None);
 static LEGACY_CLIENT: Mutex<Option<std::process::Child>> = Mutex::new(None);
+static CLEANUP_TASK: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+
+async fn wait_for_pending_cleanup() {
+    let handle = CLEANUP_TASK.lock().unwrap().take();
+    if let Some(handle) = handle {
+        let _ = handle.await;
+    }
+}
+
+pub fn trigger_cleanup_wifi_direct_group() {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let task = handle.spawn(cleanup_wifi_direct_group());
+        *CLEANUP_TASK.lock().unwrap() = Some(task);
+    } else if let Some(mut child) = LEGACY_CLIENT.lock().unwrap().take() {
+        drop(child.stdin.take());
+        let _ = child.wait();
+    }
+}
 
 fn root_owned_helper(path: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -106,28 +124,98 @@ fn network_helper_command(name: &str) -> std::process::Command {
     command
 }
 
-async fn connect_legacy_client(parent: String, req: rqs_lib::P2pUpgradeRequest) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || {
-        use std::io::{BufRead, Write};
-        let mut child = network_helper_command("wifi-p2p-client-helper.py")
-            .arg(parent)
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
-        let hex = |value: &str| value.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-        // Credentials travel in a pipe, never argv or application logs.
-        writeln!(child.stdin.as_mut().unwrap(), "{}\t{}\t{}\t{}",
-            hex(&req.ssid), hex(&req.password), req.gateway, req.frequency.unwrap_or(0))?;
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line)?;
-        if !line.starts_with("READY\tp2p-") {
-            drop(child.stdin.take());
-            let _ = child.wait();
-            anyhow::bail!("Legacy Wi-Fi Direct client did not become ready; check system authorization and helper log");
+fn should_retry_legacy_discovery(stderr: &str) -> bool {
+    stderr.contains("P2P discovery incomplete")
+}
+
+fn legacy_attempt_frequencies(requested: Option<i32>) -> Vec<i32> {
+    match requested {
+        Some(freq) if freq > 0 => vec![freq, 0],
+        _ => vec![0, 0],
+    }
+}
+
+async fn connect_legacy_client(
+    parent: String,
+    req: rqs_lib::P2pUpgradeRequest,
+) -> anyhow::Result<()> {
+    let attempts = legacy_attempt_frequencies(req.frequency);
+    let total_attempts = attempts.len();
+    for (idx, frequency) in attempts.into_iter().enumerate() {
+        let attempt = idx + 1;
+        let parent_clone = parent.clone();
+        let req_clone = req.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            use std::io::{BufRead, Read, Write};
+            let mut child = network_helper_command("wifi-p2p-client-helper.py")
+                .arg(parent_clone)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let hex = |value: &str| {
+                value
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            };
+            // Credentials travel in a pipe, never argv or application logs.
+            writeln!(
+                child.stdin.as_mut().unwrap(),
+                "{}\t{}\t{}\t{}",
+                hex(&req_clone.ssid),
+                hex(&req_clone.password),
+                req_clone.gateway,
+                frequency
+            )?;
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line)?;
+            if !line.starts_with("READY\tp2p-") {
+                drop(child.stdin.take());
+                let mut stderr = String::new();
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut stderr);
+                }
+                let _ = child.wait();
+                return Ok::<std::result::Result<(), String>, anyhow::Error>(Err(stderr));
+            }
+            tracing::info!(
+                interface = %line.trim().trim_start_matches("READY\t"),
+                attempt,
+                frequency,
+                "Legacy Wi-Fi Direct P2P-client associated and DHCP ready; station/VPN retained"
+            );
+            *LEGACY_CLIENT.lock().unwrap() = Some(child);
+            Ok(Ok(()))
+        })
+        .await??;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(stderr) => {
+                let summary = stderr.trim();
+                tracing::warn!(
+                    attempt,
+                    total_attempts,
+                    frequency,
+                    helper_stderr = %summary,
+                    "Legacy Wi-Fi Direct client attempt did not become ready"
+                );
+                if attempt < total_attempts && should_retry_legacy_discovery(summary) {
+                    tracing::info!(
+                        next_attempt = attempt + 1,
+                        "Retrying legacy Wi-Fi Direct discovery after transient scan miss"
+                    );
+                    continue;
+                }
+                anyhow::bail!(
+                    "Legacy Wi-Fi Direct client did not become ready; check system authorization and helper log"
+                );
+            }
         }
-        tracing::info!(interface = %line.trim().trim_start_matches("READY\t"),
-            "Legacy Wi-Fi Direct P2P-client associated and DHCP ready; station/VPN retained");
-        *LEGACY_CLIENT.lock().unwrap() = Some(child);
-        Ok(())
-    }).await?
+    }
+    anyhow::bail!("Legacy Wi-Fi Direct client did not become ready; check system authorization and helper log")
 }
 
 fn matches_p2p_peer(name: &str, device_name: &str) -> bool {
@@ -151,6 +239,32 @@ fn channel_for_frequency(frequency: u32) -> anyhow::Result<(&'static str, u32)> 
     }
 }
 
+fn host_medium(interface: &str, parent: &str) -> anyhow::Result<Medium> {
+    if interface == "plabap0" {
+        return Ok(Medium::WifiHotspot);
+    }
+    if interface.len() <= 15 {
+        if let Some(rest) = interface.strip_prefix("p2p-") {
+            if let Some((prefix, suffix)) = rest.rsplit_once('-') {
+                let max_prefix = 15usize.saturating_sub(5 + suffix.len());
+                let expected_prefix = if parent.len() > max_prefix {
+                    &parent[..max_prefix]
+                } else {
+                    parent
+                };
+                if !prefix.is_empty()
+                    && (prefix == parent || prefix == expected_prefix)
+                    && !suffix.is_empty()
+                    && suffix.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return Ok(Medium::WifiDirect);
+                }
+            }
+        }
+    }
+    anyhow::bail!("Network helper returned an unrelated interface")
+}
+
 async fn create_direct_group(
     parent: String,
     frequency: u32,
@@ -159,7 +273,7 @@ async fn create_direct_group(
     tokio::task::spawn_blocking(move || {
         use std::io::BufRead;
         let mut child = network_helper_command("wifi-ap-helper.py")
-            .arg(parent)
+            .arg(&parent)
             .arg(frequency.to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -175,18 +289,18 @@ async fn create_direct_group(
             );
         }
         let offer = rqs_lib::WifiDirectOffer {
-            medium: Medium::WifiHotspot,
+            medium: host_medium(fields[0], &parent)?,
             ssid: fields[1].to_owned(),
             password: fields[2].to_owned(),
             gateway: Ipv4Addr::new(192, 168, 49, 1),
             port,
             frequency: fields[3].parse()?,
         };
+        tracing::info!(medium = ?offer.medium, frequency = offer.frequency, "Concurrent direct Wi-Fi and DHCP ready");
         *DIRECT_GROUP.lock().unwrap() = Some(DirectGroup {
             child,
             offer: offer.clone(),
         });
-        tracing::info!(frequency, "Concurrent isolated AP and DHCP ready");
         Ok::<_, anyhow::Error>(offer)
     })
     .await?
@@ -449,17 +563,29 @@ impl WifiP2PController {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(req.medium == Medium::WifiDirect,
             "A peer Wi-Fi Hotspot requires a station connection; P2P discovery cannot join it while preserving the active Wi-Fi/VPN");
+        wait_for_pending_cleanup().await;
         let _operation = GROUP_OPERATION.lock().await;
+        {
+            let mut legacy = LEGACY_CLIENT.lock().unwrap();
+            if let Some(child) = legacy.as_mut() {
+                if child.try_wait().ok().flatten().is_some() {
+                    *legacy = None;
+                }
+            }
+        }
         anyhow::ensure!(P2P_CLIENT.lock().unwrap().is_none() && LEGACY_CLIENT.lock().unwrap().is_none(),
             "A P2P transfer is already active");
-        if req.device_name.is_none() {
+        if !req.ssid.is_empty() && !req.password.is_empty() {
             let device = zbus::Proxy::new(&self.conn, NM_SERVICE, self.device_path.clone(),
                 "org.freedesktop.NetworkManager.Device").await?;
             let name = device.get_property::<String>("Interface").await?;
             let parent = name.strip_prefix("p2p-dev-").context("Unknown P2P parent interface")?;
             return connect_legacy_client(parent.to_owned(), req.clone()).await;
         }
-        let device_name = req.device_name.as_deref().unwrap();
+        let device_name = req
+            .device_name
+            .as_deref()
+            .context("Wi-Fi Direct offer missing both password credentials and device name")?;
         self.start_find().await?;
         for _ in 0..30 {
             if let Ok(peers) = self.list_peers().await {
@@ -520,6 +646,7 @@ pub async fn create_transient_wifi_direct_group(
     port: u16,
 ) -> anyhow::Result<rqs_lib::WifiDirectOffer> {
     anyhow::ensure!(port != 0, "Hotspot requires a nonzero listener port");
+    wait_for_pending_cleanup().await;
     let _operation = GROUP_OPERATION.lock().await;
     {
         let mut group = DIRECT_GROUP.lock().unwrap();
@@ -846,6 +973,7 @@ pub fn register_with_rqs() {
     rqs_lib::set_p2p_host_provider(std::sync::Arc::new(|port| {
         Box::pin(detect_local_p2p_offer(port))
     }));
+    rqs_lib::set_p2p_cleanup(std::sync::Arc::new(trigger_cleanup_wifi_direct_group));
 }
 
 #[cfg(test)]
@@ -883,6 +1011,17 @@ mod tests {
     }
 
     #[test]
+    fn helper_medium_requires_the_matching_parent_group() {
+        assert_eq!(host_medium("p2p-wlo1-0", "wlo1").unwrap(), Medium::WifiDirect);
+        assert_eq!(host_medium("p2p-wlp0s20f-42", "wlp0s20f3").unwrap(), Medium::WifiDirect);
+        assert_eq!(host_medium("p2p-wlp0s20f3-5", "wlp0s20f3").unwrap(), Medium::WifiDirect);
+        assert_eq!(host_medium("plabap0", "wlo1").unwrap(), Medium::WifiHotspot);
+        for interface in ["wlo1", "p2p-other-0", "p2p-wlo1-", "p2p-wlo1-x", "p2p-wlo1-000000000"] {
+            assert!(host_medium(interface, "wlo1").is_err());
+        }
+    }
+
+    #[test]
     fn concurrent_ap_uses_the_station_channel() {
         assert_eq!(channel_for_frequency(5745).unwrap(), ("a", 149));
         assert_eq!(channel_for_frequency(5180).unwrap(), ("a", 36));
@@ -890,6 +1029,22 @@ mod tests {
         for invalid in [0, 2413, 2484, 5181, 5955] {
             assert!(channel_for_frequency(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn legacy_discovery_retry_only_matches_transient_scan_incomplete() {
+        assert!(should_retry_legacy_discovery(
+            "P2P client helper: RuntimeError: P2P discovery incomplete: scan_accepted=True, ssid_seen=False"
+        ));
+        assert!(!should_retry_legacy_discovery(
+            "Error executing command as another user: Not authorized"
+        ));
+        assert!(!should_retry_legacy_discovery(
+            "P2P client helper: RuntimeError: NetworkManager P2P address did not become ready"
+        ));
+        assert_eq!(legacy_attempt_frequencies(Some(5745)), vec![5745, 0]);
+        assert_eq!(legacy_attempt_frequencies(Some(0)), vec![0, 0]);
+        assert_eq!(legacy_attempt_frequencies(None), vec![0, 0]);
     }
 
     #[tokio::test]
@@ -914,5 +1069,197 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires live Android Quick Share peer and RQS_TEST_MAC/RQS_TEST_FILE"]
+    async fn hardware_pc_to_phone_wifi_direct() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "rqs_lib=debug,packet_lab=debug,mdns_sd=warn".into()),
+            )
+            .try_init();
+        register_with_rqs();
+        let mac = std::env::var("RQS_TEST_MAC").expect("set RQS_TEST_MAC");
+        let file = std::env::var("RQS_TEST_FILE").expect("set RQS_TEST_FILE");
+        let id = format!("bluetooth://{mac}");
+        let mut service = rqs_lib::RQS::new(
+            rqs_lib::Visibility::Invisible,
+            Some(9300),
+            None,
+            Some("Packet Lab".into()),
+        );
+        let mut events = service.message_sender.subscribe();
+        let (requests, _) = service.run().await.unwrap();
+        let started = std::time::Instant::now();
+        let mut sending_started: Option<std::time::Instant> = None;
+        let mut final_medium = String::new();
+        requests
+            .send(rqs_lib::SendInfo {
+                endpoint_id: None,
+                id: id.clone(),
+                addr: id.clone(),
+                fallback_addr: None,
+                classic_fallback_addr: None,
+                name: "Test Phone".into(),
+                ob: rqs_lib::OutboundPayload::Files(vec![file.clone()]),
+            })
+            .await
+            .unwrap();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            loop {
+                let event = events.recv().await?;
+                if event.id != id {
+                    continue;
+                }
+                let Some(client) = event.msg.as_client() else {
+                    continue;
+                };
+                if let Some(meta) = &client.metadata {
+                    if let Some(m) = &meta.transport_medium {
+                        final_medium = m.clone();
+                    }
+                    println!(
+                        "[+{:.2}s] state={:?} medium={:?} ack={}/{} err={:?}",
+                        started.elapsed().as_secs_f64(),
+                        client.state,
+                        meta.transport_medium,
+                        meta.ack_bytes,
+                        meta.total_bytes,
+                        client.error
+                    );
+                } else {
+                    println!(
+                        "[+{:.2}s] state={:?} err={:?}",
+                        started.elapsed().as_secs_f64(),
+                        client.state,
+                        client.error
+                    );
+                }
+                if client.state == Some(rqs_lib::TransferState::SendingFiles)
+                    && sending_started.is_none()
+                {
+                    sending_started = Some(std::time::Instant::now());
+                }
+                match client.state {
+                    Some(rqs_lib::TransferState::Finished) => return Ok::<_, anyhow::Error>(()),
+                    Some(
+                        rqs_lib::TransferState::Disconnected
+                        | rqs_lib::TransferState::Rejected
+                        | rqs_lib::TransferState::Cancelled,
+                    ) => anyhow::bail!("Transfer ended with {:?}: {:?}", client.state, client.error),
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        cleanup_wifi_direct_group().await;
+        service.stop().await;
+        println!(
+            "RESULT: outcome={:?} final_medium={:?} total={:.2}s send_phase={:.2}s",
+            outcome,
+            final_medium,
+            started.elapsed().as_secs_f64(),
+            sending_started
+                .map(|t| t.elapsed().as_secs_f64())
+                .unwrap_or(0.0)
+        );
+        outcome.expect("timeout").expect("transfer failed");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires live Android Quick Share sender"]
+    async fn hardware_phone_to_pc_wifi_direct() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "rqs_lib=debug,packet_lab=debug,mdns_sd=warn".into()),
+            )
+            .try_init();
+        register_with_rqs();
+        let mut service = rqs_lib::RQS::new(
+            rqs_lib::Visibility::Visible,
+            Some(9300),
+            None,
+            Some("Packet Lab".into()),
+        );
+        let msg_tx = service.message_sender.clone();
+        let mut events = service.message_sender.subscribe();
+        let (_requests, _) = service.run().await.unwrap();
+        let started = std::time::Instant::now();
+        let mut recv_started: Option<std::time::Instant> = None;
+        let mut final_medium = String::new();
+        println!("READY_FOR_INCOMING");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            let mut consented = false;
+            loop {
+                let event = events.recv().await?;
+                let Some(client) = event.msg.as_client() else {
+                    continue;
+                };
+                if let Some(meta) = &client.metadata {
+                    if let Some(m) = &meta.transport_medium {
+                        final_medium = m.clone();
+                    }
+                    println!(
+                        "[+{:.2}s] id={} state={:?} medium={:?} ack={}/{} err={:?}",
+                        started.elapsed().as_secs_f64(),
+                        event.id,
+                        client.state,
+                        meta.transport_medium,
+                        meta.ack_bytes,
+                        meta.total_bytes,
+                        client.error
+                    );
+                } else {
+                    println!(
+                        "[+{:.2}s] id={} state={:?} err={:?}",
+                        started.elapsed().as_secs_f64(),
+                        event.id,
+                        client.state,
+                        client.error
+                    );
+                }
+                if client.state == Some(rqs_lib::TransferState::WaitingForUserConsent) && !consented
+                {
+                    consented = true;
+                    println!("AUTO_ACCEPTING_CONSENT for {}", event.id);
+                    let _ = msg_tx.send(rqs_lib::channel::ChannelMessage {
+                        id: event.id.clone(),
+                        msg: rqs_lib::channel::Message::Lib {
+                            action: rqs_lib::channel::TransferAction::ConsentAccept,
+                        },
+                    });
+                }
+                if client.state == Some(rqs_lib::TransferState::ReceivingFiles)
+                    && recv_started.is_none()
+                {
+                    recv_started = Some(std::time::Instant::now());
+                }
+                match client.state {
+                    Some(rqs_lib::TransferState::Finished) => return Ok::<_, anyhow::Error>(()),
+                    Some(
+                        rqs_lib::TransferState::Disconnected
+                        | rqs_lib::TransferState::Rejected
+                        | rqs_lib::TransferState::Cancelled,
+                    ) => anyhow::bail!("Receive ended with {:?}: {:?}", client.state, client.error),
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        cleanup_wifi_direct_group().await;
+        service.stop().await;
+        println!(
+            "RESULT: outcome={:?} final_medium={:?} total={:.2}s recv_phase={:.2}s",
+            outcome,
+            final_medium,
+            started.elapsed().as_secs_f64(),
+            recv_started
+                .map(|t| t.elapsed().as_secs_f64())
+                .unwrap_or(0.0)
+        );
+        outcome.expect("timeout").expect("receive failed");
     }
 }

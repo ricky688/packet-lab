@@ -34,8 +34,8 @@ pub mod transport;
 pub mod utils;
 
 pub use bwu::{
-    P2pHostProvider, P2pUpgradeRequest, P2pUpgrader, WifiDirectOffer, set_p2p_host_provider,
-    set_p2p_upgrader,
+    P2pCleanup, P2pHostProvider, P2pUpgradeRequest, P2pUpgrader, WifiDirectOffer, set_p2p_cleanup,
+    set_p2p_host_provider, set_p2p_upgrader,
 };
 pub use hdl::{EndpointInfo, OutboundPayload, TextPayloadType, TransferState, Visibility};
 pub use manager::SendInfo;
@@ -200,12 +200,23 @@ impl RQS {
 
         #[cfg(feature = "experimental")]
         {
-            if let Ok(ble) = BleListener::new(self.ble_sender.clone())
-                .await
-                .inspect_err(|err| warn!("BleListener: {}", err))
-            {
-                let ctk = ctoken.clone();
-                tracker.spawn(async move { ble.run(ctk).await });
+            // On Linux, btleplug::start_scan holds a continuous BlueZ StartDiscovery session 24/7,
+            // which contends with BLE HID mice/keyboards (e.g. MX Master 3S reconnection) and
+            // outgoing BR/EDR paging. MDnsServer periodic re-announcements + BLE L2CAP advertising
+            // handle discovery without continuous background scanning.
+            let enable_ble_listener = if cfg!(target_os = "linux") {
+                std::env::var("RQS_BLE_BACKGROUND_SCAN").as_deref() == Ok("1")
+            } else {
+                true
+            };
+            if enable_ble_listener {
+                if let Ok(ble) = BleListener::new(self.ble_sender.clone())
+                    .await
+                    .inspect_err(|err| warn!("BleListener: {}", err))
+                {
+                    let ctk = ctoken.clone();
+                    tracker.spawn(async move { ble.run(ctk).await });
+                }
             }
         }
 

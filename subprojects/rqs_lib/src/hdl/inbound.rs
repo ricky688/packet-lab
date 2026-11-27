@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256, Sha512};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use tokio::sync::broadcast::{Receiver, Sender};
+use tokio::time::Instant;
 
 use super::{InnerState, TransferState};
 use crate::channel::{self, ChannelMessage, MessageClient, TransferAction, TransferKind};
@@ -46,6 +47,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 const SANE_FRAME_LENGTH: i32 = 5 * 1024 * 1024;
 const SANITY_DURATION: Duration = Duration::from_micros(10);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct InboundRequest {
@@ -55,6 +57,7 @@ pub struct InboundRequest {
     sender: Sender<ChannelMessage>,
     receiver: Receiver<ChannelMessage>,
     deferred_consent: bool,
+    next_keepalive: Option<Instant>,
 }
 
 impl InboundRequest {
@@ -79,6 +82,7 @@ impl InboundRequest {
             sender,
             receiver,
             deferred_consent: false,
+            next_keepalive: None,
         }
     }
 
@@ -91,7 +95,18 @@ impl InboundRequest {
         let mut length_buf = [0u8; 4];
 
         let upgrade_deadline = self.upgrade.deadline;
+        let keepalive_deadline = self.next_keepalive.filter(|_| upgrade_deadline.is_none());
         tokio::select! {
+            _ = async {
+                match keepalive_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                debug!("Sending receive keepalive during payload transfer");
+                self.send_keepalive(false, None).await?;
+                self.next_keepalive = Some(Instant::now() + KEEPALIVE_INTERVAL);
+            },
             _ = async {
                 match upgrade_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -116,12 +131,32 @@ impl InboundRequest {
                             debug!("inbound: got: {:?}", channel_msg);
                             match action {
                                 TransferAction::ConsentAccept => {
-                                    if self.upgrade.bluetooth && !self.upgrade.complete {
+                                    let wants_upgrade = self
+                                        .state
+                                        .transfer_metadata
+                                        .as_ref()
+                                        .is_none_or(|m| {
+                                            self.state.text_payload.is_none()
+                                                && (m.total_bytes >= 256 * 1024
+                                                    || self
+                                                        .upgrade
+                                                        .context
+                                                        .as_ref()
+                                                        .is_some_and(|c| c.address.is_some()))
+                                        });
+                                    if self.upgrade.bluetooth
+                                        && !self.upgrade.complete
+                                        && wants_upgrade
+                                    {
                                         if let Some(offer) = self.upgrade.offer().await? {
                                             self.deferred_consent = true;
                                             self.encrypt_and_send(&offer).await?;
-                                        } else { self.accept_transfer().await?; }
-                                    } else { self.accept_transfer().await?; }
+                                        } else {
+                                            self.accept_transfer().await?;
+                                        }
+                                    } else {
+                                        self.accept_transfer().await?;
+                                    }
                                 },
                                 TransferAction::ConsentDecline => {
                                     self.update_state(
@@ -201,11 +236,28 @@ impl InboundRequest {
                     }
                 }
                 let rdi = self.process_connection_request(&frame)?;
-                self.upgrade.remote = frame
+                let conn_req = frame
                     .v1
                     .as_ref()
-                    .and_then(|v| v.connection_request.as_ref())
-                    .and_then(|r| r.endpoint_id.clone());
+                    .and_then(|v| v.connection_request.as_ref());
+                self.upgrade.remote = conn_req.and_then(|r| r.endpoint_id.clone());
+                self.upgrade.peer_supports_wifi_direct_go = conn_req.is_some_and(|req| {
+                    let role = req
+                        .medium_metadata
+                        .as_ref()
+                        .and_then(|m| m.medium_role.as_ref());
+                    info!(
+                        "Inbound ConnectionRequest mediums={:?} role={:?}",
+                        req.mediums, role
+                    );
+                    role.and_then(|r| r.support_wifi_direct_group_owner)
+                        .unwrap_or_else(|| {
+                            req.mediums.contains(
+                                &(location_nearby_connections::connection_request_frame::Medium::WifiDirect
+                                    as i32),
+                            )
+                        })
+                });
                 info!("RemoteDeviceInfo: {:?}", &rdi);
 
                 // Advance current state
@@ -600,6 +652,9 @@ impl InboundRequest {
                     .payload_header
                     .as_ref()
                     .ok_or_else(|| anyhow!("Missing required fields"))?;
+                if payload_transfer.packet_type() != PacketType::Data {
+                    return Ok(());
+                }
                 let chunk = payload_transfer
                     .payload_chunk
                     .as_ref()
@@ -829,8 +884,11 @@ impl InboundRequest {
                 }
             }
             location_nearby_connections::v1_frame::FrameType::KeepAlive => {
-                trace!("Sending keepalive");
-                self.send_keepalive(true).await?;
+                if let Some(keepalive) = &v1_frame.keep_alive {
+                    if !keepalive.ack() {
+                        self.send_keepalive(true, keepalive.seq_num).await?;
+                    }
+                }
             }
             location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry => {
                 if let Some(retry) = &v1_frame.bandwidth_upgrade_retry {
@@ -911,6 +969,10 @@ impl InboundRequest {
             .await;
             self.disconnection().await?;
             return Err(anyhow!(crate::errors::AppError::NotAnError));
+        }
+
+        if v1_frame.r#type() == sharing_nearby::v1_frame::FrameType::ProgressUpdate {
+            return Ok(());
         }
 
         match self.state.state {
@@ -1022,12 +1084,15 @@ impl InboundRequest {
             trace!("process_introduction: handling file_metadata");
             let mut files_name = Vec::with_capacity(introduction.file_metadata.len());
             let mut total_bytes: u64 = 0;
+            let download_dir = get_download_dir()?;
+            std::fs::create_dir_all(&download_dir).context("Cannot create the download folder")?;
 
             for file in &introduction.file_metadata {
                 info!("File name: {}", file.name());
 
-                let mut dest = get_download_dir();
-                dest.push(file.name());
+                let name = std::path::Path::new(file.name());
+                anyhow::ensure!(name.file_name() == Some(name.as_os_str()), "Invalid incoming filename");
+                let mut dest = download_dir.join(name);
 
                 info!("Destination: {:?}", dest);
                 if dest.exists() {
@@ -1246,6 +1311,7 @@ impl InboundRequest {
         };
 
         self.send_encrypted_frame(&frame).await?;
+        self.next_keepalive = Some(Instant::now() + KEEPALIVE_INTERVAL);
 
         self.update_state(
             |e| {
@@ -1502,12 +1568,12 @@ impl InboundRequest {
         Ok(())
     }
 
-    async fn send_keepalive(&mut self, ack: bool) -> Result<(), anyhow::Error> {
+    async fn send_keepalive(&mut self, ack: bool, seq_num: Option<u32>) -> Result<(), anyhow::Error> {
         let ack_frame = location_nearby_connections::OfflineFrame {
             version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
             v1: Some(location_nearby_connections::V1Frame {
                 r#type: Some(location_nearby_connections::v1_frame::FrameType::KeepAlive.into()),
-                keep_alive: Some(KeepAliveFrame { ack: Some(ack) }),
+                keep_alive: Some(KeepAliveFrame { ack: Some(ack), seq_num }),
                 ..Default::default()
             }),
         };
